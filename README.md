@@ -88,7 +88,7 @@ Pi checks project trust before initialization or tool execution. The MCP facade 
 
 The npm package declares the `pi-package` keyword and an explicit `pi.extensions` manifest. After npm publication, Pi's package gallery can index it at [pi.dev/packages](https://pi.dev/packages).
 
-Releases are managed by Release Please. Conventional commits on `main` update a release PR. Merging that PR updates `package.json` and `CHANGELOG.md`, creates the version tag and GitHub Release, and publishes the package through npm trusted publishing in the same workflow.
+Releases are managed by Release Please. Conventional commits on `main` update a release PR. Merging that PR updates `package.json` and `CHANGELOG.md`, creates the version tag and GitHub Release, and publishes the package through npm trusted publishing in the same workflow. See [CONTRIBUTING.md](CONTRIBUTING.md) for the version rules and release process.
 
 Use `fix:` for patch releases, `feat:` for minor releases, and a `!` or `BREAKING CHANGE:` footer for major releases. Configure the npm trusted publisher with GitHub owner `isac322`, repository `pi-codegraph`, workflow filename `publish.yml`, no environment, and the `npm publish` action.
 
