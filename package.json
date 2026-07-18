@@ -59,7 +59,7 @@
     }
   },
   "optionalDependencies": {
-    "@colbymchenry/codegraph": "1.0.1"
+    "@colbymchenry/codegraph": "1.4.1"
   },
   "publishConfig": {
     "access": "public"
