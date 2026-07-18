@@ -1,0 +1,67 @@
+{
+  "name": "@isac322/pi-codegraph",
+  "version": "0.2.0",
+  "description": "CodeGraph tools for Pi and OMP with worktree-aware index lifecycle management.",
+  "license": "MIT",
+  "type": "module",
+  "author": "isac322",
+  "homepage": "https://github.com/isac322/pi-codegraph#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/isac322/pi-codegraph.git"
+  },
+  "bugs": {
+    "url": "https://github.com/isac322/pi-codegraph/issues"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "omp",
+    "codegraph",
+    "mcp",
+    "worktree",
+    "coding-agent"
+  ],
+  "files": [
+    ".mcp.json",
+    "bin",
+    "extensions",
+    "lib",
+    "README.md",
+    "LICENSE"
+  ],
+  "bin": {
+    "pi-codegraph-mcp": "./bin/codegraph-mcp.mjs"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/pi.mjs"
+    ]
+  },
+  "omp": {
+    "extensions": [
+      "./extensions/omp.mjs"
+    ]
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@earendil-works/pi-tui": {
+      "optional": true
+    }
+  },
+  "optionalDependencies": {
+    "@colbymchenry/codegraph": "1.0.1"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
