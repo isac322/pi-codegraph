@@ -1,18 +1,23 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { JsonRpcPeer } from "./jsonrpc.mjs";
-import { sanitizeDiagnostic } from "./codegraph.mjs";
-import { settingsEnvironment } from "./config.mjs";
+import { JsonRpcPeer } from "./jsonrpc.ts";
+import { sanitizeDiagnostic } from "./codegraph.ts";
+import { settingsEnvironment } from "./config.ts";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import type { CodeGraphSettings, ToolResult } from "./types.ts";
 
-const serverPath = fileURLToPath(new URL("../bin/codegraph-mcp.mjs", import.meta.url));
+const serverPath = fileURLToPath(new URL("../bin/codegraph-mcp.ts", import.meta.url));
 
 export class PiCodeGraphClient {
-  constructor(settings, baseRoot) {
+  readonly settings: CodeGraphSettings;
+  readonly baseRoot: string;
+  private startPromise?: Promise<void>;
+  private child?: ChildProcessWithoutNullStreams;
+  private peer?: JsonRpcPeer;
+
+  constructor(settings: CodeGraphSettings, baseRoot: string) {
     this.settings = settings;
     this.baseRoot = baseRoot;
-    this.startPromise = undefined;
-    this.child = undefined;
-    this.peer = undefined;
   }
 
   async start() {
@@ -53,8 +58,8 @@ export class PiCodeGraphClient {
     return this.peer.request(method, params, { signal, timeoutMs: this.settings.requestTimeoutMs });
   }
 
-  async callTool(name, args, signal) {
-    return this.request("tools/call", { name, arguments: args }, signal);
+  async callTool(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> {
+    return this.request("tools/call", { name, arguments: args }, signal) as Promise<ToolResult>;
   }
 
   async close() {

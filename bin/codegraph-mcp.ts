@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-import { loadSettings } from "../lib/config.mjs";
-import { ProjectGuard, WorkspaceManager, annotateFilesResult, normalizeFilesPath, publicSettings, sanitizeDiagnostic, truncateText } from "../lib/codegraph.mjs";
-import { CodeGraphWorkerPool } from "../lib/worker-pool.mjs";
-import { codegraphTools, codegraphToolNames } from "../lib/tool-metadata.mjs";
+import { loadSettings } from "../lib/config.ts";
+import { ProjectGuard, WorkspaceManager, annotateFilesResult, normalizeFilesPath, publicSettings, sanitizeDiagnostic, truncateText } from "../lib/codegraph.ts";
+import { CodeGraphWorkerPool } from "../lib/worker-pool.ts";
+import { codegraphTools, codegraphToolNames } from "../lib/tool-metadata.ts";
 
 const settings = await loadSettings();
 const baseRoot = process.env.PI_CODEGRAPH_BASE_ROOT || process.cwd();

@@ -1,9 +1,9 @@
 import { Text } from "@earendil-works/pi-tui";
-import { loadSettings } from "../lib/config.mjs";
-import { workspaceSummary } from "../lib/codegraph.mjs";
-import { buildCodeGraphPrompt } from "../lib/prompt.mjs";
-import { PiCodeGraphClient } from "../lib/pi-mcp-client.mjs";
-import { codegraphTools, summarizeToolText, toolCallLabel } from "../lib/tool-metadata.mjs";
+import { loadSettings } from "../lib/config.ts";
+import { workspaceSummary } from "../lib/codegraph.ts";
+import { buildCodeGraphPrompt } from "../lib/prompt.ts";
+import { PiCodeGraphClient } from "../lib/pi-mcp-client.ts";
+import { codegraphTools, summarizeToolText, toolCallLabel } from "../lib/tool-metadata.ts";
 
 function textContent(result) {
   return (result?.content || []).filter((item) => item?.type === "text").map((item) => item.text).join("\n");
@@ -14,7 +14,7 @@ async function trusted(ctx) {
   return Boolean(await ctx.isProjectTrusted());
 }
 
-export default async function piCodeGraphExtension(pi) {
+export default async function piCodeGraphExtension(pi: any): Promise<void> {
   const settings = await loadSettings();
   let sessionCwd = process.cwd();
   let client;

@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { access, lstat, mkdir, readFile, realpath, readdir, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
+import type { CodeGraphSettings, WorkspaceIdentity, WorkspaceStatus } from "./types.ts";
 
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
@@ -62,7 +63,7 @@ async function gitValue(cwd, args) {
   }
 }
 
-export async function gitIdentity(input) {
+export async function gitIdentity(input: string): Promise<WorkspaceIdentity> {
   const sourcePath = await existingDirectory(input);
   const top = await gitValue(sourcePath, ["rev-parse", "--show-toplevel"]);
   if (!top) {
@@ -98,6 +99,9 @@ function isWithin(child, parent) {
 }
 
 export class ProjectGuard {
+  readonly base: WorkspaceIdentity;
+  readonly allowedRoots: string[];
+
   static async create(baseRoot, settings) {
     if (process.env.PI_CODEGRAPH_TRUSTED === "0") throw new Error("CodeGraph is disabled for an untrusted project.");
     const base = await gitIdentity(baseRoot);
@@ -245,10 +249,12 @@ async function acquireLock(lockPath, timeoutMs = 30_000) {
 }
 
 export class WorkspaceManager {
-  constructor(settings) {
+  readonly settings: CodeGraphSettings;
+  readonly lastSync = new Map<string, number>();
+  private lastGc = 0;
+
+  constructor(settings: CodeGraphSettings) {
     this.settings = settings;
-    this.lastSync = new Map();
-    this.lastGc = 0;
   }
 
   async prepare(identity, options = {}) {
@@ -379,7 +385,7 @@ export class WorkspaceManager {
   }
 }
 
-export async function workspaceSummary(cwd) {
+export async function workspaceSummary(cwd: string): Promise<WorkspaceStatus> {
   try {
     const identity = await gitIdentity(cwd);
     const linkPath = join(identity.sourcePath, ".codegraph");
@@ -397,7 +403,7 @@ export async function workspaceSummary(cwd) {
   }
 }
 
-export function publicSettings(settings) {
+export function publicSettings(settings: CodeGraphSettings): Omit<CodeGraphSettings, "codegraphExecutable"> & { codegraphExecutable: string } {
   return {
     autoSync: settings.autoSync,
     autoGc: settings.autoGc,

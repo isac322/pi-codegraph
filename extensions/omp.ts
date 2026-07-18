@@ -1,8 +1,8 @@
-import { loadSettings } from "../lib/config.mjs";
-import { workspaceSummary } from "../lib/codegraph.mjs";
-import { buildCodeGraphPrompt } from "../lib/prompt.mjs";
+import { loadSettings } from "../lib/config.ts";
+import { workspaceSummary } from "../lib/codegraph.ts";
+import { buildCodeGraphPrompt } from "../lib/prompt.ts";
 
-export default async function ompCodeGraphExtension(omp) {
+export default async function ompCodeGraphExtension(omp: any): Promise<void> {
   const settings = await loadSettings();
   if (!settings.promptInjection || typeof omp?.on !== "function") return;
   omp.on("before_agent_start", async (event, ctx) => {

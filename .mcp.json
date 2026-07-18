@@ -2,7 +2,7 @@
   "mcpServers": {
     "codegraph": {
       "command": "node",
-      "args": ["./bin/codegraph-mcp.mjs"]
+      "args": ["./bin/codegraph-mcp.ts"]
     }
   }
 }

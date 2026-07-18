@@ -31,20 +31,23 @@
     "LICENSE"
   ],
   "bin": {
-    "pi-codegraph-mcp": "./bin/codegraph-mcp.mjs"
+    "pi-codegraph-mcp": "./bin/codegraph-mcp.ts"
   },
   "pi": {
     "extensions": [
-      "./extensions/pi.mjs"
+      "./extensions/pi.ts"
     ]
   },
   "omp": {
     "extensions": [
-      "./extensions/omp.mjs"
+      "./extensions/omp.ts"
     ]
   },
   "engines": {
-    "node": ">=22.19.0"
+    "node": ">=22.19.0 <25.0.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
@@ -60,6 +63,10 @@
   },
   "optionalDependencies": {
     "@colbymchenry/codegraph": "1.4.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
   },
   "publishConfig": {
     "access": "public"

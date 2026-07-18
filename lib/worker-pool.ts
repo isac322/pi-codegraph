@@ -1,26 +1,39 @@
 import { spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
-import { JsonRpcPeer } from "./jsonrpc.mjs";
-import { resolveCodeGraphLaunch, sanitizeDiagnostic } from "./codegraph.mjs";
+import { JsonRpcPeer } from "./jsonrpc.ts";
+import { resolveCodeGraphLaunch, sanitizeDiagnostic } from "./codegraph.ts";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import type { CodeGraphSettings, ToolResult } from "./types.ts";
+
+interface WorkerEntry {
+  projectPath: string;
+  child: ChildProcessWithoutNullStreams;
+  peer: JsonRpcPeer;
+  busy: number;
+  lastUsed: number;
+  idleTimer?: ReturnType<typeof setTimeout>;
+}
 
 export class CodeGraphWorkerPool {
-  constructor(settings) {
+  readonly settings: CodeGraphSettings;
+  readonly entries = new Map<string, WorkerEntry>();
+  readonly creating = new Map<string, Promise<WorkerEntry>>();
+  private closed = false;
+
+  constructor(settings: CodeGraphSettings) {
     this.settings = settings;
-    this.entries = new Map();
-    this.creating = new Map();
-    this.closed = false;
   }
 
   activeProjects() {
     return new Set(this.entries.keys());
   }
 
-  async call(projectPath, toolName, args, signal) {
+  async call(projectPath: string, toolName: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> {
     const entry = await this.#get(projectPath);
     entry.busy += 1;
     clearTimeout(entry.idleTimer);
     try {
-      return await entry.peer.request("tools/call", { name: toolName, arguments: args }, { signal, timeoutMs: this.settings.requestTimeoutMs });
+      return await entry.peer.request("tools/call", { name: toolName, arguments: args }, { signal, timeoutMs: this.settings.requestTimeoutMs }) as ToolResult;
     } catch (error) {
       if (error?.name === "AbortError" || error?.code === "ETIMEDOUT") await this.closeProject(projectPath, error);
       throw error;

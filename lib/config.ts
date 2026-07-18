@@ -1,11 +1,12 @@
 import os from "node:os";
 import path from "node:path";
 import { readFile } from "node:fs/promises";
+import type { CodeGraphSettings } from "./types.ts";
 
 const configHome = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
 const cacheHome = process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache");
 
-export const defaultSettings = Object.freeze({
+export const defaultSettings: Readonly<CodeGraphSettings> = Object.freeze({
   autoSync: true,
   autoGc: true,
   indexStore: path.join(cacheHome, "pi-codegraph"),
@@ -56,7 +57,7 @@ function normalizeSettings(input) {
   };
 }
 
-export async function loadSettings(overrides = {}) {
+export async function loadSettings(overrides: Partial<CodeGraphSettings> = {}): Promise<CodeGraphSettings> {
   const configFile = process.env.PI_CODEGRAPH_CONFIG || overrides.configFile || defaultSettings.configFile;
   let fileSettings = {};
   try {
@@ -84,7 +85,7 @@ export async function loadSettings(overrides = {}) {
   return normalizeSettings({ ...defaultSettings, ...fileSettings, ...compactEnvironment, ...overrides, configFile });
 }
 
-export function settingsEnvironment(settings, baseRoot, trusted = true) {
+export function settingsEnvironment(settings: CodeGraphSettings, baseRoot: string, trusted = true): NodeJS.ProcessEnv {
   return {
     PI_CODEGRAPH_BASE_ROOT: baseRoot,
     PI_CODEGRAPH_TRUSTED: trusted ? "1" : "0",

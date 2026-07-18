@@ -8,15 +8,26 @@ The extension exposes CodeGraph's structural tools with native Pi metadata and r
 
 ## Install
 
+### Pi
+
 ```sh
 pi install npm:@isac322/pi-codegraph
 ```
+
+### OMP
+
+```sh
+omp install @isac322/pi-codegraph
+omp plugin list
+```
+
+Restart OMP or run `/reload-plugins` after installation. `omp install` uses the user scope by default.
 
 OMP loads the package-local `.mcp.json` and `omp.extensions` entry. Pi loads `pi.extensions` and starts the internal MCP facade at session start, never during extension discovery.
 
 The package installs `@colbymchenry/codegraph@1.4.1` as an optional dependency and falls back to a `codegraph` executable on `PATH`.
 
-Node.js 22.19 or newer is required. OMP itself may run under Bun, but it starts this package's MCP facade with the `node` command declared in `.mcp.json`; MCP child processes do not inherit or need to match the host agent's runtime.
+Node.js 22.19 through Node 24 is required. OMP itself may run under Bun, but it starts this package's TypeScript MCP facade with the `node` command declared in `.mcp.json`; MCP child processes do not inherit or need to match the host agent's runtime. Node 22.19 executes the erasable TypeScript source directly.
 
 ## Tools
 

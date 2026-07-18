@@ -1,3 +1,5 @@
+import type { CodeGraphTool } from "./types.ts";
+
 const projectPath = {
   type: "string",
   description: "Absolute path to the target project or worktree. Pi fills this with the active cwd when omitted; OMP child agents should pass their exact worktree path.",
@@ -12,7 +14,7 @@ function object(properties, required = []) {
   return { type: "object", properties, required, additionalProperties: false };
 }
 
-export const codegraphTools = Object.freeze([
+export const codegraphTools: readonly CodeGraphTool[] = Object.freeze([
   {
     name: "codegraph_search",
     label: "CodeGraph Search",
@@ -81,13 +83,13 @@ export const codegraphTools = Object.freeze([
 
 export const codegraphToolNames = Object.freeze(codegraphTools.map((tool) => tool.name));
 
-export function toolCallLabel(name, args = {}) {
+export function toolCallLabel(name: string, args: Record<string, unknown> = {}): string {
   const value = args.query || args.symbol || args.path || "status";
   const project = typeof args.projectPath === "string" ? args.projectPath.split(/[\\/]/).filter(Boolean).at(-1) : "current";
   return `${value} · ${project}`;
 }
 
-export function summarizeToolText(text) {
+export function summarizeToolText(text: unknown): { firstLine: string; lineCount: number; truncated: boolean } {
   const lines = String(text || "").split("\n").filter((line) => line.trim());
   return {
     firstLine: lines[0] || "No output",

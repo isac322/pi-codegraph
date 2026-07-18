@@ -1,18 +1,29 @@
+import type { Readable, Writable } from "node:stream";
+import type { JsonRpcMessage, JsonRpcRequestOptions } from "./types.ts";
+
+interface PendingRequest {
+  finish: (error?: Error, value?: unknown) => void;
+}
+
 export class JsonRpcPeer {
-  constructor(readable, writable, options = {}) {
+  readonly readable: Readable;
+  readonly writable: Writable;
+  readonly name: string;
+  private nextId = 1;
+  private readonly pending = new Map<number, PendingRequest>();
+  private buffer = "";
+  private closed = false;
+
+  constructor(readable: Readable, writable: Writable, options: { name?: string } = {}) {
     this.readable = readable;
     this.writable = writable;
     this.name = options.name || "JSON-RPC peer";
-    this.nextId = 1;
-    this.pending = new Map();
-    this.buffer = "";
-    this.closed = false;
     readable.on("data", (chunk) => this.#onData(chunk));
     readable.on("error", (error) => this.close(error));
     readable.on("end", () => this.close(new Error(`${this.name} closed`)));
   }
 
-  request(method, params = {}, options = {}) {
+  request(method: string, params: Record<string, unknown> = {}, options: JsonRpcRequestOptions = {}): Promise<unknown> {
     if (this.closed) return Promise.reject(new Error(`${this.name} is closed`));
     const id = this.nextId++;
     const timeoutMs = options.timeoutMs || 30_000;
@@ -43,18 +54,18 @@ export class JsonRpcPeer {
     });
   }
 
-  notify(method, params = {}) {
+  notify(method: string, params: Record<string, unknown> = {}): void {
     if (!this.closed) this.#write({ jsonrpc: "2.0", method, params });
   }
 
-  close(error = new Error(`${this.name} closed`)) {
+  close(error = new Error(`${this.name} closed`)): void {
     if (this.closed) return;
     this.closed = true;
     for (const pending of this.pending.values()) pending.finish(error);
     this.pending.clear();
   }
 
-  #write(message) {
+  #write(message: JsonRpcMessage): void {
     try {
       this.writable.write(`${JSON.stringify(message)}\n`);
     } catch (error) {
