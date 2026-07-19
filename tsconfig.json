@@ -1,12 +1,12 @@
 {
   "compilerOptions": {
-    "target": "ES2023",
+    "target": "ES2022",
+    "lib": ["ES2024", "ESNext.Array", "ESNext.Collection", "ESNext.Iterator"],
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "noEmit": true,
-    "strict": false,
-    "noImplicitAny": false,
-    "useUnknownInCatchVariables": false,
+    "strict": true,
+    "esModuleInterop": true,
     "verbatimModuleSyntax": true,
     "skipLibCheck": true,
     "types": ["node"]

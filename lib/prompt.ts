@@ -1,10 +1,20 @@
 import type { WorkspaceStatus } from "./types.js";
 
-export function buildCodeGraphPrompt({ runtime, cwd, status }: { runtime: "pi" | "omp"; cwd: string; status: WorkspaceStatus }): string {
-  const projectRule = runtime === "omp"
-    ? `Always pass projectPath=\"${cwd}\" so parent and child agents query the correct worktree.`
-    : `The extension automatically binds omitted projectPath to \"${cwd}\".`;
-  const state = status.identityMatches === false ? "identity-mismatch" : status.state;
+export function buildCodeGraphPrompt({
+  runtime,
+  cwd,
+  status,
+}: {
+  runtime: "pi" | "omp";
+  cwd: string;
+  status: WorkspaceStatus;
+}): string {
+  const projectRule =
+    runtime === "omp"
+      ? `Always pass projectPath="${cwd}" so parent and child agents query the correct worktree.`
+      : `The extension automatically binds omitted projectPath to "${cwd}".`;
+  const state =
+    status.identityMatches === false ? "identity-mismatch" : status.state;
   return [
     "CodeGraph structural tools are available as codegraph_* tools.",
     `Active project: ${cwd}`,

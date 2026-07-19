@@ -48,6 +48,10 @@
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "npm run clean && tsc -p tsconfig.build.json",
+    "check": "biome check .",
+    "check:fix": "biome check --write .",
+    "format": "biome format --write .",
+    "lint": "biome lint .",
     "typecheck": "tsc -p tsconfig.json",
     "prepack": "npm run build"
   },
@@ -67,8 +71,10 @@
     "@colbymchenry/codegraph": "1.4.1"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.4",
+    "@earendil-works/pi-coding-agent": "^0.80.10",
     "@earendil-works/pi-tui": "^0.80.10",
-    "@types/node": "^24.0.0",
+    "@types/node": "^22.20.1",
     "typescript": "^7.0.2"
   },
   "publishConfig": {

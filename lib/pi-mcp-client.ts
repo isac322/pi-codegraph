@@ -1,12 +1,14 @@
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { JsonRpcPeer } from "./jsonrpc.js";
 import { sanitizeDiagnostic } from "./codegraph.js";
 import { settingsEnvironment } from "./config.js";
-import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { JsonRpcPeer } from "./jsonrpc.js";
 import type { CodeGraphSettings, ToolResult } from "./types.js";
 
-const serverPath = fileURLToPath(new URL("../bin/codegraph-mcp.js", import.meta.url));
+const serverPath = fileURLToPath(
+  new URL("../bin/codegraph-mcp.js", import.meta.url),
+);
 
 export class PiCodeGraphClient {
   readonly settings: CodeGraphSettings;
@@ -20,32 +22,52 @@ export class PiCodeGraphClient {
     this.baseRoot = baseRoot;
   }
 
-  async start() {
+  async start(): Promise<void> {
     if (this.peer) return;
     if (this.startPromise) return this.startPromise;
-    this.startPromise = this.#start().finally(() => { this.startPromise = undefined; });
+    this.startPromise = this.#start().finally(() => {
+      this.startPromise = undefined;
+    });
     return this.startPromise;
   }
 
-  async #start() {
+  async #start(): Promise<void> {
     const child = spawn(process.execPath, [serverPath], {
       cwd: this.baseRoot,
-      env: { ...process.env, ...settingsEnvironment(this.settings, this.baseRoot, true) },
+      env: {
+        ...process.env,
+        ...settingsEnvironment(this.settings, this.baseRoot, true),
+      },
       stdio: ["pipe", "pipe", "pipe"],
     });
     let stderr = "";
-    child.stderr.on("data", (chunk) => { stderr = `${stderr}${chunk.toString("utf8")}`.slice(-8_000); });
-    const peer = new JsonRpcPeer(child.stdout, child.stdin, { name: "pi-codegraph MCP facade" });
+    child.stderr.on("data", (chunk) => {
+      stderr = `${stderr}${chunk.toString("utf8")}`.slice(-8_000);
+    });
+    const peer = new JsonRpcPeer(child.stdout, child.stdin, {
+      name: "pi-codegraph MCP facade",
+    });
     child.on("error", (error) => peer.close(error));
-    child.on("exit", (code) => peer.close(new Error(sanitizeDiagnostic(stderr) || `pi-codegraph MCP facade exited with code ${code}`)));
+    child.on("exit", (code) =>
+      peer.close(
+        new Error(
+          sanitizeDiagnostic(stderr) ||
+            `pi-codegraph MCP facade exited with code ${code}`,
+        ),
+      ),
+    );
     this.child = child;
     this.peer = peer;
     try {
-      await peer.request("initialize", {
-        protocolVersion: "2024-11-05",
-        capabilities: {},
-        clientInfo: { name: "pi-codegraph-pi", version: "0.2.0" },
-      }, { timeoutMs: this.settings.requestTimeoutMs });
+      await peer.request(
+        "initialize",
+        {
+          protocolVersion: "2024-11-05",
+          capabilities: {},
+          clientInfo: { name: "pi-codegraph-pi", version: "0.2.0" },
+        },
+        { timeoutMs: this.settings.requestTimeoutMs },
+      );
       peer.notify("initialized", {});
     } catch (error) {
       await this.close();
@@ -53,16 +75,33 @@ export class PiCodeGraphClient {
     }
   }
 
-  async request(method, params = {}, signal) {
+  async request(
+    method: string,
+    params: Record<string, unknown> = {},
+    signal?: AbortSignal,
+  ): Promise<unknown> {
     await this.start();
-    return this.peer.request(method, params, { signal, timeoutMs: this.settings.requestTimeoutMs });
+    const peer = this.peer;
+    if (!peer) throw new Error("pi-codegraph MCP facade did not start");
+    return peer.request(method, params, {
+      signal,
+      timeoutMs: this.settings.requestTimeoutMs,
+    });
   }
 
-  async callTool(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> {
-    return this.request("tools/call", { name, arguments: args }, signal) as Promise<ToolResult>;
+  async callTool(
+    name: string,
+    args: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<ToolResult> {
+    return this.request(
+      "tools/call",
+      { name, arguments: args },
+      signal,
+    ) as Promise<ToolResult>;
   }
 
-  async close() {
+  async close(): Promise<void> {
     const peer = this.peer;
     const child = this.child;
     this.peer = undefined;
