@@ -6,7 +6,7 @@ updates:
       interval: weekly
       day: monday
       time: "09:00"
-      timezone: Etc/UTC
+      timezone: Asia/Seoul
     open-pull-requests-limit: 10
     groups:
       npm-minor-and-patch:
@@ -20,5 +20,5 @@ updates:
       interval: weekly
       day: monday
       time: "09:00"
-      timezone: Etc/UTC
+      timezone: Asia/Seoul
     open-pull-requests-limit: 10
