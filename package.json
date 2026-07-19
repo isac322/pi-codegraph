@@ -1,6 +1,6 @@
 {
   "name": "@isac322/pi-codegraph",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "CodeGraph tools for Pi and OMP with worktree-aware index lifecycle management.",
   "license": "MIT",
   "type": "module",
