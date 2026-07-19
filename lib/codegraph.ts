@@ -397,6 +397,26 @@ async function readMetadata(
   }
 }
 
+async function readIndexedSourcePath(
+  indexPath: string,
+): Promise<string | undefined> {
+  try {
+    const parsed: unknown = JSON.parse(
+      await readFile(join(indexPath, "source.json"), "utf8"),
+    );
+    const sourceDir =
+      typeof parsed === "object" &&
+      parsed !== null &&
+      "sourceDir" in parsed &&
+      typeof parsed.sourceDir === "string"
+        ? parsed.sourceDir
+        : undefined;
+    return sourceDir ? await existingDirectory(sourceDir) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function writeMetadata(
   indexPath: string,
   metadata: IndexMetadata,
@@ -521,6 +541,11 @@ export class WorkspaceManager {
         const metadata = target ? await readMetadata(target) : undefined;
         if (metadata?.managed && metadata.sourcePath === identity.sourcePath) {
           await rm(linkPath, { force: true });
+        } else if (
+          target &&
+          (await readIndexedSourcePath(target)) === identity.sourcePath
+        ) {
+          return { indexPath: target, managed: false };
         } else {
           throw new Error(
             `Refusing to replace an unmanaged .codegraph symlink at ${identity.sourcePath}`,
