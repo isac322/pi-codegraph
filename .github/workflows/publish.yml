@@ -44,6 +44,18 @@ jobs:
         if: ${{ steps.release.outputs.release_created }}
         run: npm install --global "npm@^11.5.1"
 
+      - name: Install dependencies
+        if: ${{ steps.release.outputs.release_created }}
+        run: npm ci --ignore-scripts
+
+      - name: Typecheck
+        if: ${{ steps.release.outputs.release_created }}
+        run: npm run typecheck
+
+      - name: Build distribution
+        if: ${{ steps.release.outputs.release_created }}
+        run: npm run build
+
       - name: Publish to npm
         if: ${{ steps.release.outputs.release_created }}
-        run: npm publish --access public
+        run: npm publish --access public --ignore-scripts

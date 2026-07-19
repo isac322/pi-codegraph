@@ -27,7 +27,9 @@ OMP loads the package-local `.mcp.json` and `omp.extensions` entry. Pi loads `pi
 
 The package installs `@colbymchenry/codegraph@1.4.1` as an optional dependency and falls back to a `codegraph` executable on `PATH`.
 
-Node.js 22.19 through Node 24 is required. OMP itself may run under Bun, but it starts this package's TypeScript MCP facade with the `node` command declared in `.mcp.json`; MCP child processes do not inherit or need to match the host agent's runtime. Node 22.19 executes the erasable TypeScript source directly.
+Node.js 22.19 through Node 24 is required. OMP itself may run under Bun, but it starts this package's compiled MCP facade with the `node` command declared in `.mcp.json`; MCP child processes do not inherit or need to match the host agent's runtime.
+
+The repository contains TypeScript source only. Release builds compile it into `dist`, and the npm tarball includes the compiled JavaScript, declarations, and source maps rather than the TypeScript runtime source.
 
 ## Tools
 
@@ -92,6 +94,16 @@ Environment overrides:
 - Tool cancellation and timeout propagate to the worker. Diagnostics are ANSI-stripped, size-limited, and redact common token and secret forms.
 - `codegraph_files` accepts absolute in-project paths and `~`, normalizing them to repo-relative POSIX prefixes.
 - Large results are bounded and retain both their beginning and end with an explicit truncation marker.
+
+## Development
+
+```sh
+npm ci
+npm run typecheck
+npm run build
+```
+
+`npm pack` and local `npm publish` run the build through `prepack`. The release workflow installs locked dependencies, typechecks, builds `dist`, and publishes that distribution through npm OIDC.
 
 ## Security
 

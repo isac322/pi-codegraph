@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-import { loadSettings } from "../lib/config.ts";
-import { ProjectGuard, WorkspaceManager, annotateFilesResult, normalizeFilesPath, publicSettings, sanitizeDiagnostic, truncateText } from "../lib/codegraph.ts";
-import { CodeGraphWorkerPool } from "../lib/worker-pool.ts";
-import { codegraphTools, codegraphToolNames } from "../lib/tool-metadata.ts";
+import { loadSettings } from "../lib/config.js";
+import { ProjectGuard, WorkspaceManager, annotateFilesResult, normalizeFilesPath, publicSettings, sanitizeDiagnostic, truncateText } from "../lib/codegraph.js";
+import { CodeGraphWorkerPool } from "../lib/worker-pool.js";
+import { codegraphTools, codegraphToolNames } from "../lib/tool-metadata.js";
 
 const settings = await loadSettings();
 const baseRoot = process.env.PI_CODEGRAPH_BASE_ROOT || process.cwd();
@@ -25,8 +25,8 @@ function errorResponse(id, error, code = -32603) {
   write({ jsonrpc: "2.0", id, error: { code, message: sanitizeDiagnostic(error?.message || error) } });
 }
 
-async function resolveIdentity(params = {}) {
-  return guard.resolve(params.projectPath || baseRoot);
+async function resolveIdentity(params: Record<string, unknown> = {}) {
+  return guard.resolve(typeof params.projectPath === "string" ? params.projectPath : baseRoot);
 }
 
 function extractText(result) {

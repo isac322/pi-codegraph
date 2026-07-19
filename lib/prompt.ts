@@ -1,4 +1,4 @@
-import type { WorkspaceStatus } from "./types.ts";
+import type { WorkspaceStatus } from "./types.js";
 
 export function buildCodeGraphPrompt({ runtime, cwd, status }: { runtime: "pi" | "omp"; cwd: string; status: WorkspaceStatus }): string {
   const projectRule = runtime === "omp"

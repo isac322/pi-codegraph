@@ -1,4 +1,4 @@
-import type { CodeGraphTool } from "./types.ts";
+import type { CodeGraphTool } from "./types.js";
 
 const projectPath = {
   type: "string",
@@ -10,7 +10,7 @@ const kind = {
   enum: ["function", "method", "class", "interface", "type", "variable", "route", "component"],
 };
 
-function object(properties, required = []) {
+function object(properties: Record<string, unknown>, required: string[] = []): CodeGraphTool["inputSchema"] {
   return { type: "object", properties, required, additionalProperties: false };
 }
 

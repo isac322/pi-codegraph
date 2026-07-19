@@ -1,6 +1,6 @@
-import { loadSettings } from "../lib/config.ts";
-import { workspaceSummary } from "../lib/codegraph.ts";
-import { buildCodeGraphPrompt } from "../lib/prompt.ts";
+import { loadSettings } from "../lib/config.js";
+import { workspaceSummary } from "../lib/codegraph.js";
+import { buildCodeGraphPrompt } from "../lib/prompt.js";
 
 export default async function ompCodeGraphExtension(omp: any): Promise<void> {
   const settings = await loadSettings();

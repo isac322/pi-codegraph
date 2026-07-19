@@ -1,7 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 import { readFile } from "node:fs/promises";
-import type { CodeGraphSettings } from "./types.ts";
+import type { CodeGraphSettings } from "./types.js";
 
 const configHome = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
 const cacheHome = process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache");

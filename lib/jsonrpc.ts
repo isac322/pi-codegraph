@@ -1,5 +1,5 @@
 import type { Readable, Writable } from "node:stream";
-import type { JsonRpcMessage, JsonRpcRequestOptions } from "./types.ts";
+import type { JsonRpcMessage, JsonRpcRequestOptions } from "./types.js";
 
 interface PendingRequest {
   finish: (error?: Error, value?: unknown) => void;
@@ -28,8 +28,8 @@ export class JsonRpcPeer {
     const id = this.nextId++;
     const timeoutMs = options.timeoutMs || 30_000;
     return new Promise((resolve, reject) => {
-      let timer;
-      const finish = (error, value) => {
+      let timer: NodeJS.Timeout;
+      const finish = (error?: Error, value?: unknown) => {
         clearTimeout(timer);
         options.signal?.removeEventListener("abort", onAbort);
         this.pending.delete(id);
@@ -44,7 +44,7 @@ export class JsonRpcPeer {
       timer = setTimeout(() => {
         this.notify("notifications/cancelled", { requestId: id, reason: "timeout" });
         const error = new Error(`${method} timed out after ${timeoutMs}ms`);
-        error.code = "ETIMEDOUT";
+        (error as NodeJS.ErrnoException).code = "ETIMEDOUT";
         finish(error);
       }, timeoutMs);
       timer.unref?.();
@@ -91,7 +91,7 @@ export class JsonRpcPeer {
       if (!pending) continue;
       if (message.error) {
         const error = new Error(message.error.message || JSON.stringify(message.error));
-        error.code = message.error.code;
+        (error as Error & { code?: number | string }).code = message.error.code;
         pending.finish(error);
       } else {
         pending.finish(undefined, message.result);

@@ -5,12 +5,23 @@ import { promisify } from "node:util";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { access, lstat, mkdir, readFile, realpath, readdir, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
-import type { CodeGraphSettings, WorkspaceIdentity, WorkspaceStatus } from "./types.ts";
+import type { CodeGraphSettings, WorkspaceIdentity, WorkspaceStatus } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
 const metadataName = ".pi-codegraph.json";
 const emptyFilesMarker = "No files found matching the criteria.";
+
+interface CodeGraphRunOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  forceSync?: boolean;
+}
+
+interface CodeGraphRunResult {
+  stdout: string;
+  stderr: string;
+}
 
 export function sanitizeDiagnostic(value, maxLength = 2_000) {
   const clean = String(value || "")
@@ -164,19 +175,25 @@ export async function resolveCodeGraphLaunch(settings, args = []) {
   return { command: "codegraph", args };
 }
 
-export async function runCodeGraph(settings, cwd, args, options = {}) {
+export async function runCodeGraph(
+  settings: CodeGraphSettings,
+  cwd: string,
+  args: string[],
+  options: CodeGraphRunOptions = {},
+): Promise<CodeGraphRunResult> {
   const launch = await resolveCodeGraphLaunch(settings, args);
-  return new Promise((resolvePromise, reject) => {
+  return new Promise<CodeGraphRunResult>((resolvePromise, reject) => {
     const child = spawn(launch.command, launch.args, { cwd, env: process.env, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     let settled = false;
-    const finish = (error, value) => {
+    const finish = (error?: Error | null, value?: CodeGraphRunResult) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       options.signal?.removeEventListener("abort", onAbort);
-      error ? reject(error) : resolvePromise(value);
+      if (error) reject(error);
+      else if (value) resolvePromise(value);
     };
     const onAbort = () => {
       child.kill();
@@ -195,7 +212,7 @@ export async function runCodeGraph(settings, cwd, args, options = {}) {
     const timer = setTimeout(() => {
       child.kill();
       const error = new Error(`codegraph ${args[0]} timed out after ${timeoutMs}ms`);
-      error.code = "ETIMEDOUT";
+      (error as NodeJS.ErrnoException).code = "ETIMEDOUT";
       finish(error);
     }, timeoutMs);
     timer.unref?.();
@@ -257,7 +274,7 @@ export class WorkspaceManager {
     this.settings = settings;
   }
 
-  async prepare(identity, options = {}) {
+  async prepare(identity: WorkspaceIdentity, options: CodeGraphRunOptions = {}) {
     await existingDirectory(identity.sourcePath);
     const key = createHash("sha256").update(`${identity.repoIdentity}\0${identity.worktreeIdentity}\0${identity.sourcePath}`).digest("hex");
     const managedIndex = join(this.settings.indexStore, "projects", key);

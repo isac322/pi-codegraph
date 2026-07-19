@@ -1,9 +1,9 @@
 import { spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
-import { JsonRpcPeer } from "./jsonrpc.ts";
-import { resolveCodeGraphLaunch, sanitizeDiagnostic } from "./codegraph.ts";
+import { JsonRpcPeer } from "./jsonrpc.js";
+import { resolveCodeGraphLaunch, sanitizeDiagnostic } from "./codegraph.js";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
-import type { CodeGraphSettings, ToolResult } from "./types.ts";
+import type { CodeGraphSettings, ToolResult } from "./types.js";
 
 interface WorkerEntry {
   projectPath: string;

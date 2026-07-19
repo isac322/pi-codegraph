@@ -24,30 +24,32 @@
   ],
   "files": [
     ".mcp.json",
-    "bin",
-    "extensions",
-    "lib",
+    "dist",
     "README.md",
+    "CONTRIBUTING.md",
     "LICENSE"
   ],
   "bin": {
-    "pi-codegraph-mcp": "./bin/codegraph-mcp.ts"
+    "pi-codegraph-mcp": "./dist/bin/codegraph-mcp.js"
   },
   "pi": {
     "extensions": [
-      "./extensions/pi.ts"
+      "./dist/extensions/pi.js"
     ]
   },
   "omp": {
     "extensions": [
-      "./extensions/omp.ts"
+      "./dist/extensions/omp.js"
     ]
   },
   "engines": {
     "node": ">=22.19.0 <25.0.0"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "prepack": "npm run build"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
@@ -65,8 +67,9 @@
     "@colbymchenry/codegraph": "1.4.1"
   },
   "devDependencies": {
+    "@earendil-works/pi-tui": "^0.80.10",
     "@types/node": "^24.0.0",
-    "typescript": "^5.9.0"
+    "typescript": "^7.0.2"
   },
   "publishConfig": {
     "access": "public"

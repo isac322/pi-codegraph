@@ -1,9 +1,9 @@
 import { Text } from "@earendil-works/pi-tui";
-import { loadSettings } from "../lib/config.ts";
-import { workspaceSummary } from "../lib/codegraph.ts";
-import { buildCodeGraphPrompt } from "../lib/prompt.ts";
-import { PiCodeGraphClient } from "../lib/pi-mcp-client.ts";
-import { codegraphTools, summarizeToolText, toolCallLabel } from "../lib/tool-metadata.ts";
+import { loadSettings } from "../lib/config.js";
+import { workspaceSummary } from "../lib/codegraph.js";
+import { buildCodeGraphPrompt } from "../lib/prompt.js";
+import { PiCodeGraphClient } from "../lib/pi-mcp-client.js";
+import { codegraphTools, summarizeToolText, toolCallLabel } from "../lib/tool-metadata.js";
 
 function textContent(result) {
   return (result?.content || []).filter((item) => item?.type === "text").map((item) => item.text).join("\n");

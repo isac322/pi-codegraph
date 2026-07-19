@@ -1,12 +1,12 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { JsonRpcPeer } from "./jsonrpc.ts";
-import { sanitizeDiagnostic } from "./codegraph.ts";
-import { settingsEnvironment } from "./config.ts";
+import { JsonRpcPeer } from "./jsonrpc.js";
+import { sanitizeDiagnostic } from "./codegraph.js";
+import { settingsEnvironment } from "./config.js";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
-import type { CodeGraphSettings, ToolResult } from "./types.ts";
+import type { CodeGraphSettings, ToolResult } from "./types.js";
 
-const serverPath = fileURLToPath(new URL("../bin/codegraph-mcp.ts", import.meta.url));
+const serverPath = fileURLToPath(new URL("../bin/codegraph-mcp.js", import.meta.url));
 
 export class PiCodeGraphClient {
   readonly settings: CodeGraphSettings;
