@@ -11,7 +11,7 @@ interface OmpExtensionContext {
 }
 
 interface OmpExtensionApi {
-  on?: (
+  on: (
     event: "before_agent_start",
     handler: (
       event: OmpBeforeAgentStartEvent,
@@ -25,8 +25,7 @@ export default async function ompCodeGraphExtension(
 ): Promise<void> {
   const settings = await loadSettings();
   if (!settings.promptInjection || typeof omp?.on !== "function") return;
-  const on = omp.on;
-  on("before_agent_start", async (event, ctx) => {
+  omp.on("before_agent_start", async (event, ctx) => {
     const cwd = ctx?.cwd || process.cwd();
     const status = await workspaceSummary(cwd);
     const guidance = buildCodeGraphPrompt({ runtime: "omp", cwd, status });

@@ -1,0 +1,27 @@
+FROM node:22.19.0-bookworm-slim
+
+ARG BUN_VERSION=1.3.14
+ARG OMP_VERSION=17.0.5
+
+RUN apt-get update \
+  && apt-get install --yes --no-install-recommends git \
+  && rm -rf /var/lib/apt/lists/* \
+  && npm install --global "bun@${BUN_VERSION}"
+
+WORKDIR /workspace
+
+COPY package.json package-lock.json ./
+RUN npm ci --ignore-scripts
+
+COPY . .
+RUN npm run build \
+  && npm install --no-save --ignore-scripts "@oh-my-pi/pi-coding-agent@${OMP_VERSION}" \
+  && ./node_modules/.bin/omp plugin link /workspace --scope user
+
+ENV CI=1 \
+  OMP_BIN=/workspace/node_modules/.bin/omp \
+  PI_CODEGRAPH_INDEX_STORE=/tmp/pi-codegraph-index \
+  XDG_CACHE_HOME=/tmp/cache \
+  XDG_CONFIG_HOME=/tmp/config
+
+CMD ["bun", "tests/omp-docker.integration.ts"]

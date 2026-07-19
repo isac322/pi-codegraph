@@ -1,0 +1,5 @@
+.git
+.codegraph
+dist
+node_modules
+*.log

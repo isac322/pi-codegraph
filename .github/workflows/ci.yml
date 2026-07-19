@@ -34,3 +34,15 @@ jobs:
         run: npm run build
       - name: Audit production dependencies
         run: npm audit --omit=dev
+
+  omp-integration:
+    name: OMP Docker integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Build isolated OMP test image
+        run: docker build --file tests/docker/Dockerfile.omp --tag pi-codegraph-omp-integration .
+      - name: Exercise every CodeGraph tool through OMP
+        run: docker run --rm pi-codegraph-omp-integration

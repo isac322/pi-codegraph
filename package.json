@@ -47,11 +47,12 @@
   },
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
-    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "build": "npm run clean && tsc -p tsconfig.build.json && node scripts/ensure-bin-executable.ts",
     "check": "biome check .",
     "check:fix": "biome check --write .",
     "format": "biome format --write .",
     "lint": "biome lint .",
+    "test:omp:docker": "docker build --file tests/docker/Dockerfile.omp --tag pi-codegraph-omp-integration . && docker run --rm pi-codegraph-omp-integration",
     "typecheck": "tsc -p tsconfig.json",
     "prepack": "npm run build"
   },
