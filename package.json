@@ -55,8 +55,8 @@
     "test:omp:docker": "docker build --file tests/docker/Dockerfile.omp --tag pi-codegraph-omp-integration . && docker run --rm pi-codegraph-omp-integration",
     "typecheck": "tsc -p tsconfig.json",
     "prepack": "npm run build",
-    "test:integration:daemon": "docker build -f tests/docker/Dockerfile.omp -t pi-codegraph-omp-integration . && docker run --rm pi-codegraph-omp-integration bun tests/shared-daemon-docker.integration.ts",
-    "test:integration:pi": "docker build -f tests/docker/Dockerfile.pi ."
+    "test:integration:daemon": "docker build -f tests/docker/Dockerfile.omp -t pi-codegraph-omp-integration . && docker run --rm --init pi-codegraph-omp-integration bun tests/shared-daemon-docker.integration.ts",
+    "test:integration:pi": "docker build -f tests/docker/Dockerfile.pi -t pi-codegraph-pi-integration . && docker run --rm --init pi-codegraph-pi-integration"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",

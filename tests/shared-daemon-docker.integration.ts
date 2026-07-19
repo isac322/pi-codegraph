@@ -62,8 +62,13 @@ async function clientMain(projectPath: string, symbol: string): Promise<void> {
         return;
       }
       await loaded.manager.disconnectAll();
-      process.send?.({ type: "closed" } satisfies ClientMessage);
-      process.disconnect?.();
+      if (process.send) {
+        process.send({ type: "closed" } satisfies ClientMessage, () =>
+          process.exit(0),
+        );
+      } else {
+        process.exit(0);
+      }
     });
   } catch (error) {
     process.send?.({
@@ -118,13 +123,14 @@ function waitForMessage(
 }
 
 async function waitUntil(
+  description: string,
   predicate: () => Promise<boolean>,
   timeoutMs = 15_000,
 ): Promise<void> {
   const startedAt = Date.now();
   while (!(await predicate())) {
     if (Date.now() - startedAt >= timeoutMs) {
-      throw new Error("Timed out waiting for daemon state change");
+      throw new Error(`Timed out waiting for ${description}`);
     }
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
   }
@@ -251,7 +257,7 @@ async function main(): Promise<void> {
       waitForMessage(mainClient, "ready"),
       waitForMessage(secondaryClient, "ready"),
     ]);
-    await waitUntil(() => exists(daemonPidPath));
+    await waitUntil("shared daemon startup", () => exists(daemonPidPath));
     const daemonPid = await readDaemonPid(daemonPidPath);
     assert.ok(
       processExists(daemonPid),
@@ -280,6 +286,7 @@ async function main(): Promise<void> {
     secondaryClient.send("close");
     await waitForMessage(secondaryClient, "closed");
     await waitUntil(
+      "shared daemon shutdown after the final OMP client disconnected",
       async () => !processExists(daemonPid) && !(await exists(daemonPidPath)),
     );
     console.log(
