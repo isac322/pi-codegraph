@@ -408,7 +408,9 @@ async function readIndexedSourcePath(
       typeof parsed === "object" &&
       parsed !== null &&
       "sourceDir" in parsed &&
-      typeof parsed.sourceDir === "string"
+      typeof parsed.sourceDir === "string" &&
+      "version" in parsed &&
+      parsed.version === 1
         ? parsed.sourceDir
         : undefined;
     return sourceDir ? await existingDirectory(sourceDir) : undefined;

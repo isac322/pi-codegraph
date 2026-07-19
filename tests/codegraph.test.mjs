@@ -96,3 +96,37 @@ test("rejects a legacy CodeGraph symlink for a different source directory", asyn
     await realpath(legacyIndex),
   );
 });
+
+test("rejects a legacy CodeGraph symlink with an unsupported metadata version", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pi-codegraph-test-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const sourcePath = path.join(root, "project");
+  const legacyIndex = path.join(root, "legacy-index");
+  await mkdir(sourcePath);
+  await mkdir(legacyIndex);
+  await writeFile(
+    path.join(legacyIndex, "source.json"),
+    `${JSON.stringify({ sourceDir: sourcePath, version: 2 }, null, 2)}\n`,
+  );
+  await writeFile(path.join(legacyIndex, "codegraph.db"), "");
+  await symlink(legacyIndex, path.join(sourcePath, ".codegraph"), "dir");
+
+  const manager = new WorkspaceManager({
+    ...defaultSettings,
+    autoSync: false,
+    autoGc: false,
+    indexStore: path.join(root, "managed"),
+  });
+
+  await assert.rejects(
+    manager.prepare({
+      sourcePath,
+      repoRoot: sourcePath,
+      repoIdentity: "repo-identity",
+      worktreeIdentity: "worktree-identity",
+      gitCommonDir: "",
+    }),
+    /Refusing to replace an unmanaged \.codegraph symlink/,
+  );
+});
