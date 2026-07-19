@@ -75,7 +75,7 @@ async function callTool(
   const supplied = isRecord(params.arguments) ? { ...params.arguments } : {};
   const identity = await resolveIdentity(supplied);
   await manager.prepare(identity, { signal });
-  delete supplied.projectPath;
+  supplied.projectPath = identity.sourcePath;
   const originalFilesPath =
     name === "codegraph_files" && typeof supplied.path === "string"
       ? supplied.path

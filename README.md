@@ -117,6 +117,12 @@ Releases are managed by Release Please. Conventional commits on `main` update a 
 
 Use `fix:` for patch releases, `feat:` for minor releases, and a `!` or `BREAKING CHANGE:` footer for major releases. Configure the npm trusted publisher with GitHub owner `isac322`, repository `pi-codegraph`, workflow filename `publish.yml`, no environment, and the `npm publish` action.
 
+### Shared daemon lifecycle
+
+All Pi and OMP sessions that use the same `indexStore` attach to one CodeGraph daemon. Each tool request forwards its canonical `projectPath`, so the daemon can serve multiple repositories and Git worktrees without merging their indexes.
+
+`maxWorkers` controls the shared daemon's query worker count. `workerIdleTimeoutMs` controls how long the daemon remains alive after the last Pi or OMP client disconnects; the default is five minutes. Set the same `indexStore` for every session that should share a daemon.
+
 ## License
 
 MIT

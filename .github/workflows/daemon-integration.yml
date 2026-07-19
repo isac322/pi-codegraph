@@ -1,0 +1,43 @@
+name: Daemon integration
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daemon-integration-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TZ: Asia/Seoul
+
+jobs:
+  omp-shared-daemon:
+    name: OMP shared daemon and worktrees
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build OMP integration image
+        run: docker build -f tests/docker/Dockerfile.omp -t pi-codegraph-omp-integration .
+      - name: Test shared daemon
+        run: >-
+          docker run --rm --init
+          pi-codegraph-omp-integration
+          bun tests/shared-daemon-docker.integration.ts
+
+  pi:
+    name: Pi extension
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build Pi integration image
+        run: docker build -f tests/docker/Dockerfile.pi -t pi-codegraph-pi-integration .
+      - name: Exercise every CodeGraph tool through Pi
+        run: docker run --rm --init pi-codegraph-pi-integration

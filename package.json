@@ -54,7 +54,9 @@
     "lint": "biome lint .",
     "test:omp:docker": "docker build --file tests/docker/Dockerfile.omp --tag pi-codegraph-omp-integration . && docker run --rm pi-codegraph-omp-integration",
     "typecheck": "tsc -p tsconfig.json",
-    "prepack": "npm run build"
+    "prepack": "npm run build",
+    "test:integration:daemon": "docker build -f tests/docker/Dockerfile.omp -t pi-codegraph-omp-integration . && docker run --rm --init pi-codegraph-omp-integration bun tests/shared-daemon-docker.integration.ts",
+    "test:integration:pi": "docker build -f tests/docker/Dockerfile.pi -t pi-codegraph-pi-integration . && docker run --rm --init pi-codegraph-pi-integration"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
@@ -76,6 +78,7 @@
     "@earendil-works/pi-coding-agent": "^0.80.10",
     "@earendil-works/pi-tui": "^0.80.10",
     "@types/node": "^22.20.1",
+    "tsx": "^4.23.1",
     "typescript": "^7.0.2"
   },
   "publishConfig": {
