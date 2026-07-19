@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/isac322/pi-codegraph/compare/pi-codegraph-v0.3.0...pi-codegraph-v0.3.1) (2026-07-19)
+
+
+### Bug Fixes
+
+* reuse matching CodeGraph symlinks ([#8](https://github.com/isac322/pi-codegraph/issues/8)) ([1bde4c0](https://github.com/isac322/pi-codegraph/commit/1bde4c05c35c4285e1f347c9302429f86b5b331d))
+
 ## [0.3.0](https://github.com/isac322/pi-codegraph/compare/pi-codegraph-v0.2.0...pi-codegraph-v0.3.0) (2026-07-19)
 
 
