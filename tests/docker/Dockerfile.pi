@@ -1,0 +1,20 @@
+FROM node:22.19-bookworm-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Asia/Seoul
+ENV HOME=/tmp/pi-home
+ENV CODEGRAPH_PPID_POLL_MS=100
+ENV PI_CODEGRAPH_WORKER_IDLE_MS=1000
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates git \
+  && rm -rf /var/lib/apt/lists/* \
+  && mkdir -p /tmp/pi-home
+
+WORKDIR /workspace
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
+
+CMD ["node", "--import", "tsx", "tests/pi-docker.integration.ts"]
