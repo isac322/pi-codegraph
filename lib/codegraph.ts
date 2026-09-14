@@ -13,6 +13,7 @@ import {
   rm,
   stat,
   symlink,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -44,7 +45,7 @@ const ansiEscapePattern = new RegExp(
 
 interface CodeGraphRunOptions {
   signal?: AbortSignal;
-  timeoutMs?: number;
+  timeoutMs?: number | null;
   forceSync?: boolean;
 }
 
@@ -71,6 +72,24 @@ interface IndexMetadata {
   managed?: boolean;
   lastPreparedAt?: string;
   lastSyncAt?: string | number | null;
+}
+
+function statusRecommendsReindex(stdout: string): boolean {
+  let status: unknown;
+  try {
+    status = JSON.parse(stdout);
+  } catch {
+    throw new Error("CodeGraph status --json returned invalid JSON");
+  }
+  if (typeof status !== "object" || status === null || !("index" in status))
+    return false;
+  const index = status.index;
+  return (
+    typeof index === "object" &&
+    index !== null &&
+    "reindexRecommended" in index &&
+    index.reindexRecommended === true
+  );
 }
 
 function hasErrorCode(error: unknown, ...codes: string[]): boolean {
@@ -374,6 +393,7 @@ export async function runCodeGraph(
     let stdout = "";
     let stderr = "";
     let settled = false;
+    let timer: NodeJS.Timeout | undefined;
     const finish = (error?: Error | null, value?: CodeGraphRunResult) => {
       if (settled) return;
       settled = true;
@@ -405,16 +425,21 @@ export async function runCodeGraph(
           ),
         );
     });
-    const timeoutMs = options.timeoutMs || settings.requestTimeoutMs;
-    const timer = setTimeout(() => {
-      child.kill();
-      const error = new Error(
-        `codegraph ${args[0]} timed out after ${timeoutMs}ms`,
-      );
-      (error as NodeJS.ErrnoException).code = "ETIMEDOUT";
-      finish(error);
-    }, timeoutMs);
-    timer.unref?.();
+    const timeoutMs =
+      options.timeoutMs === undefined
+        ? settings.requestTimeoutMs
+        : options.timeoutMs;
+    if (timeoutMs !== null) {
+      timer = setTimeout(() => {
+        child.kill();
+        const error = new Error(
+          `codegraph ${args[0]} timed out after ${timeoutMs}ms`,
+        );
+        (error as NodeJS.ErrnoException).code = "ETIMEDOUT";
+        finish(error);
+      }, timeoutMs);
+      timer.unref?.();
+    }
     options.signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
@@ -483,7 +508,15 @@ async function acquireLock(
   for (;;) {
     try {
       await mkdir(lockPath);
-      return async () => rm(lockPath, { recursive: true, force: true });
+      const heartbeat = setInterval(
+        () => void utimes(lockPath, new Date(), new Date()).catch(() => {}),
+        Math.max(100, Math.min(5_000, Math.floor(timeoutMs / 2))),
+      );
+      heartbeat.unref?.();
+      return async () => {
+        clearInterval(heartbeat);
+        await rm(lockPath, { recursive: true, force: true });
+      };
     } catch (error) {
       if (!hasErrorCode(error, "EEXIST")) throw error;
       try {
@@ -506,6 +539,7 @@ export class WorkspaceManager {
   readonly settings: CodeGraphSettings;
   readonly lastSync = new Map<string, number>();
   private lastGc = 0;
+  private readonly reindexChecked = new Set<string>();
 
   constructor(settings: CodeGraphSettings) {
     this.settings = settings;
@@ -528,15 +562,27 @@ export class WorkspaceManager {
       await existingDirectory(identity.sourcePath);
       const binding = await this.#bind(identity, managedIndex);
       const database = join(binding.indexPath, "codegraph.db");
-      if (!(await exists(database)))
+      const databaseExists = await exists(database);
+      let reindexed = false;
+      if (!databaseExists) {
         await runCodeGraph(
           this.settings,
           identity.sourcePath,
           ["init", "-i"],
           options,
         );
+        this.reindexChecked.add(binding.indexPath);
+      } else {
+        reindexed = await this.#reindexIfStale(
+          identity,
+          binding.indexPath,
+          options,
+        );
+      }
+      if (reindexed) this.lastSync.set(identity.sourcePath, Date.now());
       const lastSync = this.lastSync.get(identity.sourcePath) || 0;
       const shouldSync =
+        !reindexed &&
         (options.forceSync || this.settings.autoSync) &&
         (options.forceSync ||
           Date.now() - lastSync >= this.settings.syncMinIntervalMs);
@@ -563,6 +609,40 @@ export class WorkspaceManager {
       return { ...metadata, indexPath: binding.indexPath, state: "ready" };
     } finally {
       await release();
+    }
+  }
+
+  async #reindexIfStale(
+    identity: WorkspaceIdentity,
+    indexPath: string,
+    options: CodeGraphRunOptions,
+  ): Promise<boolean> {
+    if (this.reindexChecked.has(indexPath)) return false;
+    this.reindexChecked.add(indexPath);
+    let reindexRecommended: boolean;
+    try {
+      const status = await runCodeGraph(
+        this.settings,
+        identity.sourcePath,
+        ["status", "--json"],
+        options,
+      );
+      reindexRecommended = statusRecommendsReindex(status.stdout);
+    } catch {
+      return false;
+    }
+    if (!reindexRecommended) return false;
+    await existingDirectory(identity.sourcePath);
+    try {
+      await runCodeGraph(
+        this.settings,
+        identity.sourcePath,
+        ["index", "--quiet"],
+        { ...options, signal: undefined, timeoutMs: null },
+      );
+      return true;
+    } catch {
+      return false;
     }
   }
 

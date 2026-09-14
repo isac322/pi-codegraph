@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
+  chmod,
   mkdir,
   mkdtemp,
+  readFile,
   readlink,
   realpath,
   rm,
@@ -12,6 +14,7 @@ import {
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { normalizeFilesPath, WorkspaceManager } from "../dist/lib/codegraph.js";
 import { defaultSettings } from "../dist/lib/config.js";
@@ -41,6 +44,74 @@ async function createManagedDatabase(indexStore, identity) {
   await mkdir(indexPath, { recursive: true });
   await writeFile(path.join(indexPath, "codegraph.db"), "");
   return indexPath;
+}
+
+async function createFakeCodeGraph(
+  root,
+  { initialState = "stale", indexDelayMs = 0, failCommand = "" } = {},
+) {
+  const executable = path.join(root, "fake-codegraph.mjs");
+  const logPath = path.join(root, "codegraph-calls.jsonl");
+  const statePath = path.join(root, "codegraph-state");
+  await writeFile(statePath, initialState);
+  await writeFile(
+    executable,
+    [
+      "#!/usr/bin/env node",
+      'import { appendFileSync, readFileSync, writeFileSync } from "node:fs";',
+      `const logPath = ${JSON.stringify(logPath)};`,
+      `const statePath = ${JSON.stringify(statePath)};`,
+      `const indexDelayMs = ${indexDelayMs};`,
+      `const failCommand = ${JSON.stringify(failCommand)};`,
+      "const args = process.argv.slice(2);",
+      'appendFileSync(logPath, JSON.stringify(args) + "\\n");',
+      'if (args[0] === "status") {',
+      '  if (failCommand === "invalid-status") {',
+      '    process.stdout.write("not-json");',
+      "    process.exit(0);",
+      "  }",
+      '  if (failCommand === "status") process.exit(1);',
+      '  const stale = readFileSync(statePath, "utf8") === "stale";',
+      "  process.stdout.write(JSON.stringify({ index: { reindexRecommended: stale } }));",
+      "  process.exit(0);",
+      "}",
+      'if (args[0] === "index") {',
+      "  if (indexDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, indexDelayMs));",
+      '  if (failCommand === "index") process.exit(1);',
+      '  writeFileSync(statePath, "current");',
+      "  process.exit(0);",
+      "}",
+      'if (args[0] === "sync") process.exit(0);',
+      'process.stderr.write("unexpected command: " + args.join(" ") + "\\n");',
+      "process.exit(1);",
+      "",
+    ].join("\n"),
+  );
+  await chmod(executable, 0o755);
+  return { executable, logPath, statePath };
+}
+
+async function readCodeGraphCalls(logPath) {
+  return (await readFile(logPath, "utf8"))
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+}
+
+async function waitForCodeGraphCall(logPath, command) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      if (
+        (await readCodeGraphCalls(logPath)).some((args) => args[0] === command)
+      )
+        return;
+    } catch {
+      // The first command has not created the log yet.
+    }
+    await delay(20);
+  }
+  throw new Error(`Timed out waiting for fake CodeGraph ${command}`);
 }
 
 test("exposes the complete CodeGraph 1.6 MCP schema", () => {
@@ -123,6 +194,112 @@ test("normalizes absolute file arguments and labels file-only node calls", () =>
   );
 });
 
+test("reindexes a stale existing index once before serving it", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pi-codegraph-test-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const sourcePath = path.join(root, "project");
+  const indexStore = path.join(root, "managed");
+  const identity = workspaceIdentity(sourcePath, "reindex");
+  await mkdir(sourcePath);
+  await createManagedDatabase(indexStore, identity);
+  const fake = await createFakeCodeGraph(root, { indexDelayMs: 3_500 });
+  const settings = {
+    ...defaultSettings,
+    autoSync: false,
+    autoGc: false,
+    indexStore,
+    codegraphExecutable: fake.executable,
+    requestTimeoutMs: 3_000,
+  };
+
+  const manager = new WorkspaceManager(settings);
+  const prepared = await manager.prepare(identity);
+  await manager.prepare(identity);
+
+  assert.equal(prepared.state, "ready");
+  assert.equal(await readFile(fake.statePath, "utf8"), "current");
+  assert.deepEqual(await readCodeGraphCalls(fake.logPath), [
+    ["status", "--json"],
+    ["index", "--quiet"],
+  ]);
+
+  const nextSession = new WorkspaceManager({ ...settings, autoSync: false });
+  await nextSession.prepare(identity);
+  assert.deepEqual(await readCodeGraphCalls(fake.logPath), [
+    ["status", "--json"],
+    ["index", "--quiet"],
+    ["status", "--json"],
+  ]);
+});
+
+test("keeps serving when stale detection or rebuilding fails", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pi-codegraph-test-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  for (const failCommand of ["status", "invalid-status", "index"]) {
+    const caseRoot = path.join(root, failCommand);
+    const sourcePath = path.join(caseRoot, "project");
+    const indexStore = path.join(caseRoot, "managed");
+    const identity = workspaceIdentity(sourcePath, failCommand);
+    await mkdir(sourcePath, { recursive: true });
+    await createManagedDatabase(indexStore, identity);
+    const fake = await createFakeCodeGraph(caseRoot, { failCommand });
+    const manager = new WorkspaceManager({
+      ...defaultSettings,
+      autoSync: false,
+      autoGc: false,
+      indexStore,
+      codegraphExecutable: fake.executable,
+    });
+
+    assert.equal((await manager.prepare(identity)).state, "ready");
+    assert.equal((await manager.prepare(identity)).state, "ready");
+    assert.deepEqual(
+      await readCodeGraphCalls(fake.logPath),
+      failCommand === "status" || failCommand === "invalid-status"
+        ? [["status", "--json"]]
+        : [
+            ["status", "--json"],
+            ["index", "--quiet"],
+          ],
+    );
+  }
+});
+
+test("keeps a long reindex lock alive with heartbeats", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pi-codegraph-test-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const sourcePath = path.join(root, "project");
+  const indexStore = path.join(root, "managed");
+  const identity = workspaceIdentity(sourcePath, "heartbeat");
+  await mkdir(sourcePath);
+  await createManagedDatabase(indexStore, identity);
+  const fake = await createFakeCodeGraph(root, { indexDelayMs: 3_500 });
+  const settings = {
+    ...defaultSettings,
+    autoSync: false,
+    autoGc: false,
+    requestTimeoutMs: 1_000,
+    indexStore,
+    codegraphExecutable: fake.executable,
+  };
+
+  const firstPrepare = new WorkspaceManager(settings).prepare(identity);
+  await waitForCodeGraphCall(fake.logPath, "index");
+  await delay(2_200);
+  await assert.rejects(
+    new WorkspaceManager(settings).prepare(identity),
+    /Timed out waiting for CodeGraph index lock/,
+  );
+  assert.equal((await firstPrepare).state, "ready");
+  assert.deepEqual(await readCodeGraphCalls(fake.logPath), [
+    ["status", "--json"],
+    ["index", "--quiet"],
+  ]);
+});
+
 test("reuses a legacy CodeGraph symlink for the same source directory", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "pi-codegraph-test-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -137,12 +314,14 @@ test("reuses a legacy CodeGraph symlink for the same source directory", async (t
   );
   await writeFile(path.join(legacyIndex, "codegraph.db"), "");
   await symlink(legacyIndex, path.join(sourcePath, ".codegraph"), "dir");
+  const fake = await createFakeCodeGraph(root, { initialState: "current" });
 
   const manager = new WorkspaceManager({
     ...defaultSettings,
     autoSync: false,
     autoGc: false,
     indexStore: path.join(root, "managed"),
+    codegraphExecutable: fake.executable,
   });
   const prepared = await manager.prepare({
     sourcePath,
@@ -250,12 +429,14 @@ test("repairs a dangling managed CodeGraph symlink during prepare", async (t) =>
   const expectedIndex = await createManagedDatabase(indexStore, identity);
   const staleTarget = path.join(indexStore, "projects", "stale-index");
   await symlink(staleTarget, path.join(sourcePath, ".codegraph"), "dir");
+  const fake = await createFakeCodeGraph(root, { initialState: "current" });
 
   const manager = new WorkspaceManager({
     ...defaultSettings,
     autoSync: false,
     autoGc: false,
     indexStore,
+    codegraphExecutable: fake.executable,
   });
   const prepared = await manager.prepare(identity);
 
@@ -282,12 +463,14 @@ test("repairs an alias-spelled dangling managed symlink", async (t) => {
   const expectedIndex = await createManagedDatabase(indexStore, identity);
   const staleTarget = path.join(indexStoreAlias, "projects", "stale-index");
   await symlink(staleTarget, path.join(sourcePath, ".codegraph"), "dir");
+  const fake = await createFakeCodeGraph(root, { initialState: "current" });
 
   const manager = new WorkspaceManager({
     ...defaultSettings,
     autoSync: false,
     autoGc: false,
     indexStore,
+    codegraphExecutable: fake.executable,
   });
   const prepared = await manager.prepare(identity);
 
@@ -407,12 +590,14 @@ test("lazily repairs a managed link after garbage collection", async (t) => {
     })}\n`,
   );
   await symlink(staleIndex, linkPath, "dir");
+  const fake = await createFakeCodeGraph(root, { initialState: "current" });
 
   const manager = new WorkspaceManager({
     ...defaultSettings,
     autoSync: false,
     autoGc: false,
     indexStore,
+    codegraphExecutable: fake.executable,
   });
   const collected = await manager.gc(new Set(), true);
 

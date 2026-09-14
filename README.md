@@ -94,6 +94,7 @@ Environment overrides:
 - OMP uses one package-local MCP facade and project-scoped CodeGraph workers.
 - Workers are capped, evicted by least-recently-used idle order, and terminated after the idle timeout.
 - Tool cancellation and timeout propagate to the worker. Diagnostics are ANSI-stripped, size-limited, and redact common token and secret forms.
+- On the first prepare after a CodeGraph engine upgrade, the facade checks the index extraction version and performs one quiet full rebuild when CodeGraph marks it stale. Existing users do not need to reindex manually, although the first startup after an upgrade may take longer. The rebuild is allowed to finish independently of a client request timeout; detection or rebuild failures do not create a per-tool retry loop, and the next session checks again.
 - `codegraph_files.path` and supported tool `file` arguments accept absolute in-project paths and `~`; the facade normalizes them to repo-relative POSIX paths.
 - Large results are bounded and retain both their beginning and end with an explicit truncation marker.
 
