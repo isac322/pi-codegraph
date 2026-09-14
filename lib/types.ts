@@ -55,6 +55,12 @@ export interface CodeGraphTool {
   description: string;
   promptSnippet: string;
   promptGuidelines: string[];
+  annotations: {
+    readOnlyHint: boolean;
+    destructiveHint: boolean;
+    idempotentHint: boolean;
+    openWorldHint: boolean;
+  };
   inputSchema: {
     type: "object";
     properties: Record<string, unknown>;

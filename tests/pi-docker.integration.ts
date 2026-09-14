@@ -98,6 +98,37 @@ async function main(): Promise<void> {
     "Pi extension did not register all CodeGraph tools",
   );
 
+  const nodeDefinition = extension.tools.get("codegraph_node")?.definition as
+    | {
+        parameters?: {
+          properties?: Record<string, unknown>;
+          required?: string[];
+        };
+        annotations?: Record<string, unknown>;
+      }
+    | undefined;
+  assert.ok(nodeDefinition);
+  assert.deepEqual(nodeDefinition.parameters?.required, []);
+  assert.deepEqual(
+    Object.keys(nodeDefinition.parameters?.properties ?? {}).sort(),
+    [
+      "file",
+      "includeCode",
+      "limit",
+      "line",
+      "offset",
+      "projectPath",
+      "symbol",
+      "symbolsOnly",
+    ],
+  );
+  assert.deepEqual(nodeDefinition.annotations, {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: false,
+  });
+
   const context = {
     cwd: fixture,
     signal: undefined,
@@ -115,15 +146,32 @@ async function main(): Promise<void> {
     }
 
     for (const [name, registered] of extension.tools) {
+      const args = requiredArguments(registered.definition.parameters);
+      if (name === "codegraph_node") {
+        Object.assign(args, {
+          file: join(fixture, "src", "service.ts"),
+          offset: 1,
+          limit: 5,
+        });
+      }
       const result = await registered.definition.execute(
         `pi-integration-${name}`,
-        requiredArguments(registered.definition.parameters),
+        args,
         undefined,
         undefined,
         context,
       );
       assert.notEqual(result.isError, true, `${name} returned an error`);
       assert.ok(result.content.length > 0, `${name} returned no content`);
+      if (name === "codegraph_node") {
+        assert.ok(
+          result.content.some(
+            (part) =>
+              part.type === "text" && part.text?.includes("IntegrationTarget"),
+          ),
+          "codegraph_node did not read the requested absolute file path",
+        );
+      }
     }
   } finally {
     for (const handler of extension.handlers.get("session_shutdown") ?? []) {

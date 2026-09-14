@@ -19,6 +19,12 @@ const guard = await ProjectGuard.create(baseRoot, settings);
 const manager = new WorkspaceManager(settings);
 const pool = new CodeGraphWorkerPool(settings);
 const controllers = new Map<number | string | null, AbortController>();
+const fileArgumentTools: Record<string, true> = {
+  codegraph_node: true,
+  codegraph_callers: true,
+  codegraph_callees: true,
+  codegraph_impact: true,
+};
 let buffer = "";
 let gcTimer: NodeJS.Timeout | undefined;
 
@@ -88,6 +94,11 @@ async function callTool(
     if (normalized === undefined) delete supplied.path;
     else supplied.path = normalized;
   }
+  if (fileArgumentTools[name] && typeof supplied.file === "string") {
+    const normalized = normalizeFilesPath(supplied.file, identity.sourcePath);
+    if (normalized === undefined) delete supplied.file;
+    else supplied.file = normalized;
+  }
   const result = await pool.call(identity.sourcePath, name, supplied, signal);
   if (result?.isError) return result;
   let text = extractText(result);
@@ -118,6 +129,7 @@ async function handleRequest(
           name: tool.name,
           description: tool.description,
           inputSchema: tool.inputSchema,
+          annotations: tool.annotations,
         })),
       };
     case "tools/call":

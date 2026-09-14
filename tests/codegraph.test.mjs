@@ -13,8 +13,9 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { WorkspaceManager } from "../dist/lib/codegraph.js";
+import { normalizeFilesPath, WorkspaceManager } from "../dist/lib/codegraph.js";
 import { defaultSettings } from "../dist/lib/config.js";
+import { codegraphTools, toolCallLabel } from "../dist/lib/tool-metadata.js";
 
 function workspaceIdentity(sourcePath, suffix) {
   return {
@@ -41,6 +42,86 @@ async function createManagedDatabase(indexStore, identity) {
   await writeFile(path.join(indexPath, "codegraph.db"), "");
   return indexPath;
 }
+
+test("exposes the complete CodeGraph 1.6 MCP schema", () => {
+  const tools = new Map(codegraphTools.map((tool) => [tool.name, tool]));
+  const expectedProperties = {
+    codegraph_search: ["kind", "limit", "projectPath", "query"],
+    codegraph_node: [
+      "file",
+      "includeCode",
+      "limit",
+      "line",
+      "offset",
+      "projectPath",
+      "symbol",
+      "symbolsOnly",
+    ],
+    codegraph_files: [
+      "format",
+      "includeMetadata",
+      "maxDepth",
+      "path",
+      "pattern",
+      "projectPath",
+    ],
+    codegraph_callers: ["file", "limit", "projectPath", "symbol"],
+    codegraph_callees: ["file", "limit", "projectPath", "symbol"],
+    codegraph_impact: ["depth", "file", "projectPath", "symbol"],
+    codegraph_explore: ["maxFiles", "projectPath", "query"],
+    codegraph_status: ["projectPath"],
+  };
+  const expectedRequired = {
+    codegraph_search: ["query"],
+    codegraph_node: [],
+    codegraph_files: [],
+    codegraph_callers: ["symbol"],
+    codegraph_callees: ["symbol"],
+    codegraph_impact: ["symbol"],
+    codegraph_explore: ["query"],
+    codegraph_status: [],
+  };
+  const readOnlyAnnotations = {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: false,
+  };
+
+  assert.deepEqual(
+    [...tools.keys()].sort(),
+    Object.keys(expectedProperties).sort(),
+  );
+  for (const [name, properties] of Object.entries(expectedProperties)) {
+    const tool = tools.get(name);
+    assert.ok(tool, `${name} is not registered`);
+    assert.deepEqual(
+      Object.keys(tool.inputSchema.properties).sort(),
+      properties,
+      `${name} properties drifted from CodeGraph 1.6`,
+    );
+    assert.deepEqual(tool.inputSchema.required, expectedRequired[name]);
+    assert.equal(tool.inputSchema.additionalProperties, false);
+    assert.deepEqual(tool.annotations, readOnlyAnnotations);
+  }
+});
+
+test("normalizes absolute file arguments and labels file-only node calls", () => {
+  assert.equal(
+    normalizeFilesPath(
+      "/workspace/project/src/service.ts",
+      "/workspace/project",
+    ),
+    "src/service.ts",
+  );
+  assert.equal(
+    toolCallLabel("codegraph_node", {
+      file: "src/service.ts",
+      projectPath: "/workspace/project",
+    }),
+    "src/service.ts · project",
+  );
+});
 
 test("reuses a legacy CodeGraph symlink for the same source directory", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "pi-codegraph-test-"));

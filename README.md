@@ -25,7 +25,7 @@ Restart OMP or run `/reload-plugins` after installation. `omp install` uses the 
 
 OMP loads the package-local `.mcp.json` and `omp.extensions` entry. Pi loads `pi.extensions` and starts the internal MCP facade at session start, never during extension discovery.
 
-The package installs `@colbymchenry/codegraph@1.4.1` as an optional dependency and falls back to a `codegraph` executable on `PATH`.
+The package installs `@colbymchenry/codegraph@1.6.0` as an optional dependency and falls back to a `codegraph` executable on `PATH`.
 
 Node.js 22.19 through Node 24 is required. OMP itself may run under Bun, but it starts this package's compiled MCP facade with the `node` command declared in `.mcp.json`; MCP child processes do not inherit or need to match the host agent's runtime.
 
@@ -33,14 +33,16 @@ The repository contains TypeScript source only. Release builds compile it into `
 
 ## Tools
 
-- `codegraph_explore`: broad architecture and flow exploration
+- `codegraph_explore`: broad architecture and flow exploration with line-numbered source
 - `codegraph_search`: symbol-name lookup
-- `codegraph_node`: one known symbol and its relationships
+- `codegraph_node`: indexed file reading, symbol inspection, and file/line disambiguation
 - `codegraph_files`: indexed project structure
-- `codegraph_callers`: inbound calls
-- `codegraph_callees`: outbound calls
-- `codegraph_impact`: transitive change impact
+- `codegraph_callers`: inbound calls, optionally narrowed to a definition file
+- `codegraph_callees`: outbound calls, optionally narrowed to a definition file
+- `codegraph_impact`: transitive change impact, optionally narrowed to a definition file
 - `codegraph_status`: CodeGraph index health
+
+`codegraph_node` accepts `file` without `symbol` to return current source with line numbers and dependents. Use `offset` and `limit` for a line range, `symbolsOnly` for a structural overview, or combine `symbol` with `file` or `line` to select a same-named definition.
 
 Pi adds compact call/result rendering and `/codegraph status|sync|doctor|gc`.
 
@@ -92,7 +94,7 @@ Environment overrides:
 - OMP uses one package-local MCP facade and project-scoped CodeGraph workers.
 - Workers are capped, evicted by least-recently-used idle order, and terminated after the idle timeout.
 - Tool cancellation and timeout propagate to the worker. Diagnostics are ANSI-stripped, size-limited, and redact common token and secret forms.
-- `codegraph_files` accepts absolute in-project paths and `~`, normalizing them to repo-relative POSIX prefixes.
+- `codegraph_files.path` and supported tool `file` arguments accept absolute in-project paths and `~`; the facade normalizes them to repo-relative POSIX paths.
 - Large results are bounded and retain both their beginning and end with an explicit truncation marker.
 
 ## Development
