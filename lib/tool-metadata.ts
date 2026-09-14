@@ -5,6 +5,18 @@ const projectPath = {
   description:
     "Absolute path to the target project or worktree. Pi fills this with the active cwd when omitted; OMP child agents should pass their exact worktree path.",
 };
+const file = {
+  type: "string",
+  description:
+    "File path or basename. Use it alone with codegraph_node to read a file, or with a symbol to select one definition.",
+};
+
+const readOnlyAnnotations = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: false,
+};
 
 const kind = {
   type: "string",
@@ -32,13 +44,13 @@ export const codegraphTools: readonly CodeGraphTool[] = Object.freeze([
     name: "codegraph_search",
     label: "CodeGraph Search",
     description:
-      "Search indexed declarations by symbol name. Use this before text search when you know all or part of a symbol name.",
-    promptSnippet:
-      "Find declarations and symbol locations by name in the active CodeGraph index.",
+      "Search indexed declarations by symbol name. Returns locations only; use codegraph_explore when you need source and relationships.",
+    promptSnippet: "Find indexed declarations and symbol locations by name.",
     promptGuidelines: [
       "Use for symbol names, not literal strings.",
-      "Follow a result with codegraph_node when implementation or relationships are needed.",
+      "Use codegraph_explore instead when you need source or execution flow.",
     ],
+    annotations: readOnlyAnnotations,
     inputSchema: object(
       {
         query: { type: "string", description: "Symbol name or partial name." },
@@ -53,23 +65,45 @@ export const codegraphTools: readonly CodeGraphTool[] = Object.freeze([
     name: "codegraph_node",
     label: "CodeGraph Node",
     description:
-      "Inspect one known symbol, including signature, location, source, callers, and callees.",
-    promptSnippet: "Inspect a known symbol and its immediate relationships.",
+      "Read an indexed file with line numbers and dependents, or inspect a named symbol with its source and relationships.",
+    promptSnippet:
+      "Read an indexed file or inspect a known symbol and its immediate relationships.",
     promptGuidelines: [
-      "Use after codegraph_search identifies the symbol.",
-      "Set includeCode only when source is necessary.",
+      "Pass file without symbol to read current source; use offset and limit for a line range or symbolsOnly for a structural overview.",
+      "Pass symbol with file or line to disambiguate same-named definitions.",
+      "Set includeCode only when symbol source is necessary.",
     ],
-    inputSchema: object(
-      {
-        symbol: {
-          type: "string",
-          description: "Exact or unambiguous symbol name.",
-        },
-        includeCode: { type: "boolean", default: false },
-        projectPath,
+    annotations: readOnlyAnnotations,
+    inputSchema: object({
+      symbol: {
+        type: "string",
+        description: "Symbol name to inspect.",
       },
-      ["symbol"],
-    ),
+      includeCode: {
+        type: "boolean",
+        description: "Include the symbol body in symbol mode.",
+        default: false,
+      },
+      file,
+      offset: {
+        type: "number",
+        description: "One-based starting line in file mode.",
+      },
+      limit: {
+        type: "number",
+        description: "Maximum lines to return in file mode.",
+      },
+      symbolsOnly: {
+        type: "boolean",
+        description: "Return the file's symbol map instead of source.",
+        default: false,
+      },
+      line: {
+        type: "number",
+        description: "Line used to disambiguate a symbol definition.",
+      },
+      projectPath,
+    }),
   },
   {
     name: "codegraph_files",
@@ -82,6 +116,7 @@ export const codegraphTools: readonly CodeGraphTool[] = Object.freeze([
       "Use before read/glob for architectural navigation.",
       "Pass a repo-relative directory prefix such as src/components.",
     ],
+    annotations: readOnlyAnnotations,
     inputSchema: object({
       path: { type: "string", description: "Repo-relative path prefix." },
       pattern: { type: "string" },
@@ -98,12 +133,18 @@ export const codegraphTools: readonly CodeGraphTool[] = Object.freeze([
   {
     name: "codegraph_callers",
     label: "CodeGraph Callers",
-    description: "Find functions and methods that call a symbol.",
+    description:
+      "Find functions and methods that call a symbol, optionally selecting its definition by file.",
     promptSnippet: "Trace inbound calls to a known symbol.",
-    promptGuidelines: ["Use for inbound flow and direct impact."],
+    promptGuidelines: [
+      "Use file when the symbol has same-named definitions.",
+      "Use for inbound flow and direct impact.",
+    ],
+    annotations: readOnlyAnnotations,
     inputSchema: object(
       {
         symbol: { type: "string" },
+        file,
         limit: { type: "number", default: 20 },
         projectPath,
       },
@@ -113,12 +154,18 @@ export const codegraphTools: readonly CodeGraphTool[] = Object.freeze([
   {
     name: "codegraph_callees",
     label: "CodeGraph Callees",
-    description: "Find functions and methods called by a symbol.",
+    description:
+      "Find functions and methods called by a symbol, optionally selecting its definition by file.",
     promptSnippet: "Trace outbound calls from a known symbol.",
-    promptGuidelines: ["Use for downstream execution flow."],
+    promptGuidelines: [
+      "Use file when the symbol has same-named definitions.",
+      "Use for downstream execution flow.",
+    ],
+    annotations: readOnlyAnnotations,
     inputSchema: object(
       {
         symbol: { type: "string" },
+        file,
         limit: { type: "number", default: 20 },
         projectPath,
       },
@@ -128,14 +175,18 @@ export const codegraphTools: readonly CodeGraphTool[] = Object.freeze([
   {
     name: "codegraph_impact",
     label: "CodeGraph Impact",
-    description: "Analyze the transitive impact radius of changing a symbol.",
+    description:
+      "Analyze the transitive impact radius of a symbol, optionally selecting its definition by file.",
     promptSnippet: "Estimate what a symbol change can affect.",
     promptGuidelines: [
+      "Use file when the symbol has same-named definitions.",
       "Use before editing shared APIs or heavily referenced symbols.",
     ],
+    annotations: readOnlyAnnotations,
     inputSchema: object(
       {
         symbol: { type: "string" },
+        file,
         depth: { type: "number", default: 2 },
         projectPath,
       },
@@ -146,13 +197,14 @@ export const codegraphTools: readonly CodeGraphTool[] = Object.freeze([
     name: "codegraph_explore",
     label: "CodeGraph Explore",
     description:
-      "Explore several related symbols and source locations grouped by file. Best first tool for broad architecture and flow questions.",
+      "Explore related symbols and line-numbered source grouped by file. Best first tool for architecture, flows, and broad code questions.",
     promptSnippet:
       "Explore a feature, flow, or architectural concept across related symbols.",
     promptGuidelines: [
-      "Prefer this first for broad how-does-it-work questions.",
-      "Narrow the query before increasing maxFiles.",
+      "Prefer this first for broad how-does-it-work questions and before editing an unfamiliar area.",
+      "Name relevant symbols or files before increasing maxFiles.",
     ],
+    annotations: readOnlyAnnotations,
     inputSchema: object(
       {
         query: {
@@ -175,6 +227,7 @@ export const codegraphTools: readonly CodeGraphTool[] = Object.freeze([
     promptGuidelines: [
       "Use when another CodeGraph tool reports an index or lock error.",
     ],
+    annotations: readOnlyAnnotations,
     inputSchema: object({ projectPath }),
   },
 ]);
@@ -187,7 +240,7 @@ export function toolCallLabel(
   _name: string,
   args: Record<string, unknown> = {},
 ): string {
-  const value = args.query || args.symbol || args.path || "status";
+  const value = args.query || args.symbol || args.file || args.path || "status";
   const project =
     typeof args.projectPath === "string"
       ? args.projectPath.split(/[\\/]/).filter(Boolean).at(-1)

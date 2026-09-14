@@ -68,6 +68,7 @@ export default async function piCodeGraphExtension(
       description: tool.description,
       promptSnippet: tool.promptSnippet,
       promptGuidelines: tool.promptGuidelines,
+      annotations: tool.annotations,
       parameters: tool.inputSchema,
       async execute(
         _toolCallId: string,

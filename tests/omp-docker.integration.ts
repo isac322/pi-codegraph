@@ -42,6 +42,15 @@ interface McpLoadResult {
   connectedServers: string[];
 }
 
+interface McpToolDefinition {
+  name: string;
+  inputSchema: {
+    properties?: Record<string, unknown>;
+    required?: string[];
+  };
+  annotations?: Record<string, unknown>;
+}
+
 const expectedTools = [
   "codegraph_search",
   "codegraph_node",
@@ -69,6 +78,19 @@ async function createFixture(): Promise<void> {
       "",
       "export function calculateTotal(values: number[]): number {",
       "  return values.reduce((total, value) => addNumbers(total, value), 0);",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  await writeFile(
+    path.join(fixturePath, "src", "alternate.ts"),
+    [
+      "export function addNumbers(left: number, right: number): number {",
+      "  return left * right;",
+      "}",
+      "",
+      "export function calculateTotal(values: number[]): number {",
+      "  return values.reduce((total, value) => addNumbers(total, value), 1);",
       "}",
       "",
     ].join("\n"),
@@ -154,6 +176,41 @@ async function main(): Promise<void> {
     );
     assert.equal(prepared.state, "ready");
 
+    const listed = await connection.transport.request<{
+      tools: McpToolDefinition[];
+    }>("tools/list");
+    const listedTools = new Map(listed.tools.map((tool) => [tool.name, tool]));
+    const nodeSchema = listedTools.get("codegraph_node")?.inputSchema;
+    assert.deepEqual(nodeSchema?.required, []);
+    assert.deepEqual(Object.keys(nodeSchema?.properties ?? {}).sort(), [
+      "file",
+      "includeCode",
+      "limit",
+      "line",
+      "offset",
+      "projectPath",
+      "symbol",
+      "symbolsOnly",
+    ]);
+    for (const name of [
+      "codegraph_callers",
+      "codegraph_callees",
+      "codegraph_impact",
+    ]) {
+      assert.ok(
+        "file" in (listedTools.get(name)?.inputSchema.properties ?? {}),
+        `${name} did not expose its file selector`,
+      );
+    }
+    for (const tool of listed.tools) {
+      assert.deepEqual(tool.annotations, {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      });
+    }
+
     const tools = new Map(
       loaded.tools.map((entry) => [entry.tool.mcpToolName, entry.tool]),
     );
@@ -163,6 +220,7 @@ async function main(): Promise<void> {
       name: (typeof expectedTools)[number];
       args: Record<string, unknown>;
       includes: string;
+      excludes?: string;
     }> = [
       {
         name: "codegraph_search",
@@ -171,8 +229,29 @@ async function main(): Promise<void> {
       },
       {
         name: "codegraph_node",
-        args: { symbol: "calculateTotal", includeCode: true },
-        includes: "calculateTotal",
+        args: {
+          symbol: "addNumbers",
+          includeCode: true,
+          file: "src/math.ts",
+          line: 1,
+        },
+        includes: "return left + right",
+        excludes: "return left * right",
+      },
+      {
+        name: "codegraph_node",
+        args: {
+          file: path.join(fixturePath, "src", "math.ts"),
+          offset: 1,
+          limit: 3,
+        },
+        includes: "addNumbers",
+        excludes: "calculateTotal",
+      },
+      {
+        name: "codegraph_node",
+        args: { file: "src/math.ts", symbolsOnly: true },
+        includes: "Symbols",
       },
       {
         name: "codegraph_files",
@@ -181,18 +260,21 @@ async function main(): Promise<void> {
       },
       {
         name: "codegraph_callers",
-        args: { symbol: "addNumbers" },
+        args: { symbol: "addNumbers", file: "src/math.ts" },
         includes: "calculateTotal",
+        excludes: "alternate.ts",
       },
       {
         name: "codegraph_callees",
-        args: { symbol: "calculateTotal" },
+        args: { symbol: "calculateTotal", file: "src/math.ts" },
         includes: "addNumbers",
+        excludes: "alternate.ts",
       },
       {
         name: "codegraph_impact",
-        args: { symbol: "addNumbers", depth: 2 },
+        args: { symbol: "addNumbers", file: "src/math.ts", depth: 2 },
         includes: "calculateTotal",
+        excludes: "alternate.ts",
       },
       {
         name: "codegraph_explore",
@@ -220,7 +302,17 @@ async function main(): Promise<void> {
         undefined,
         `${testCase.name} failed: ${textOf(result)}`,
       );
-      assert.match(textOf(result), new RegExp(testCase.includes, "i"));
+      const text = textOf(result).toLowerCase();
+      assert.ok(
+        text.includes(testCase.includes.toLowerCase()),
+        `${testCase.name} did not include ${testCase.includes}`,
+      );
+      if (testCase.excludes) {
+        assert.ok(
+          !text.includes(testCase.excludes.toLowerCase()),
+          `${testCase.name} ignored its file selector`,
+        );
+      }
     }
 
     const synchronized = await connection.transport.request<{ state: string }>(

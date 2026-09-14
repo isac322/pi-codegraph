@@ -20,8 +20,8 @@ export function buildCodeGraphPrompt({
     `Active project: ${cwd}`,
     `Index state: ${state}${status.lastSyncAt ? `; last sync: ${status.lastSyncAt}` : ""}`,
     projectRule,
-    "For architecture, execution flow, symbol location, dependency impact, and project navigation, use CodeGraph before grep/read.",
-    "Use codegraph_explore for broad flows, codegraph_search for symbol names, codegraph_node for a known symbol, codegraph_files for structure, and codegraph_callers/codegraph_impact before shared API changes.",
-    "Use grep/read for literal text, generated names, or when CodeGraph is insufficient.",
+    "Use codegraph_explore first for broad architecture and flow questions, codegraph_search for symbol locations, and codegraph_files for project structure.",
+    "Use codegraph_node with file to read indexed source and see dependents; use symbol with file or line to disambiguate definitions.",
+    "Use codegraph_callers and codegraph_impact before shared API changes. Use grep/read for literal text, unindexed files, or when CodeGraph is insufficient.",
   ].join("\n");
 }
