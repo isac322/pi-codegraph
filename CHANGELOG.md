@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.0](https://github.com/isac322/pi-codegraph/compare/pi-codegraph-v0.3.1...pi-codegraph-v0.4.0) (2026-09-14)
+
+
+### Features
+
+* update CodeGraph to 1.6.0 ([#15](https://github.com/isac322/pi-codegraph/issues/15)) ([1ec6920](https://github.com/isac322/pi-codegraph/commit/1ec69205b3d68d12b0e7c9c9ac4f3eba5b5dda1e))
+
+
+### Bug Fixes
+
+* safely repair dangling managed symlinks ([#13](https://github.com/isac322/pi-codegraph/issues/13)) ([35d640d](https://github.com/isac322/pi-codegraph/commit/35d640d0aafaf778b80ebf2038c028cdeb535be5))
+
 ## [0.3.1](https://github.com/isac322/pi-codegraph/compare/pi-codegraph-v0.3.0...pi-codegraph-v0.3.1) (2026-07-19)
 
 
