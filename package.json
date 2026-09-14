@@ -75,11 +75,11 @@
     "@colbymchenry/codegraph": "1.6.0"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.4",
-    "@earendil-works/pi-coding-agent": "^0.80.10",
-    "@earendil-works/pi-tui": "^0.80.10",
-    "@types/node": "^22.20.1",
-    "tsx": "^4.23.1",
+    "@biomejs/biome": "^2.5.13",
+    "@earendil-works/pi-coding-agent": "^0.85.1",
+    "@earendil-works/pi-tui": "^0.85.1",
+    "@types/node": "^26.5.1",
+    "tsx": "^4.23.13",
     "typescript": "^7.0.2"
   },
   "publishConfig": {
