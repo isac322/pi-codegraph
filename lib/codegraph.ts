@@ -1,12 +1,13 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import type { Dirent } from "node:fs";
+import type { Dirent, Stats } from "node:fs";
 import {
   access,
   lstat,
   mkdir,
   readdir,
   readFile,
+  readlink,
   realpath,
   rename,
   rm,
@@ -16,7 +17,15 @@ import {
 } from "node:fs/promises";
 import { createRequire } from "node:module";
 import os from "node:os";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 import { promisify } from "node:util";
 import type {
   CodeGraphSettings,
@@ -71,6 +80,40 @@ function hasErrorCode(error: unknown, ...codes: string[]): boolean {
     typeof error.code === "string" &&
     codes.includes(error.code)
   );
+}
+
+async function canonicalizePath(input: string): Promise<string | undefined> {
+  if (input.split(/[\\/]+/).includes("..")) return undefined;
+  let current = resolve(input);
+  const missingSegments: string[] = [];
+  for (;;) {
+    try {
+      const canonical = await realpath(current);
+      return resolve(canonical, ...missingSegments.reverse());
+    } catch (error) {
+      if (!hasErrorCode(error, "ENOENT")) throw error;
+      let info: Stats | undefined;
+      try {
+        info = await lstat(current);
+      } catch (inspectError) {
+        if (!hasErrorCode(inspectError, "ENOENT")) throw inspectError;
+      }
+      if (info) {
+        if (!info.isSymbolicLink()) throw error;
+        const target = await readlink(current);
+        if (target.split(/[\\/]+/).includes("..")) return undefined;
+        current = isAbsolute(target)
+          ? target
+          : resolve(dirname(current), target);
+        continue;
+      }
+    }
+    const parent = dirname(current);
+    if (parent === current)
+      throw new Error(`Unable to canonicalize filesystem path: ${input}`);
+    missingSegments.push(basename(current));
+    current = parent;
+  }
 }
 
 export function sanitizeDiagnostic(value: unknown, maxLength = 2_000): string {
@@ -529,29 +572,58 @@ export class WorkspaceManager {
   ): Promise<{ indexPath: string; managed: boolean }> {
     const linkPath = join(identity.sourcePath, ".codegraph");
     await mkdir(managedIndex, { recursive: true });
+    let info: Stats | undefined;
     try {
-      const info = await lstat(linkPath);
+      info = await lstat(linkPath);
+    } catch (error) {
+      if (!hasErrorCode(error, "ENOENT")) throw error;
+    }
+    if (info) {
       if (info.isSymbolicLink()) {
         let target: string;
         try {
           target = await realpath(linkPath);
-        } catch {
+        } catch (error) {
+          if (!hasErrorCode(error, "ENOENT")) throw error;
+          const configuredTarget = await readlink(linkPath);
+          const absoluteTarget = isAbsolute(configuredTarget)
+            ? configuredTarget
+            : `${dirname(linkPath)}${sep}${configuredTarget}`;
+          const [canonicalTarget, managedProjectsRoot] = await Promise.all([
+            canonicalizePath(absoluteTarget),
+            canonicalizePath(join(this.settings.indexStore, "projects")),
+          ]);
+          if (
+            !canonicalTarget ||
+            !managedProjectsRoot ||
+            canonicalTarget === managedProjectsRoot ||
+            !isWithin(canonicalTarget, managedProjectsRoot)
+          ) {
+            throw new Error(
+              `Refusing to replace an unmanaged .codegraph symlink at ${identity.sourcePath}`,
+            );
+          }
+          await rm(linkPath, { force: true });
           target = "";
         }
-        if (target === managedIndex)
-          return { indexPath: managedIndex, managed: true };
-        const metadata = target ? await readMetadata(target) : undefined;
-        if (metadata?.managed && metadata.sourcePath === identity.sourcePath) {
-          await rm(linkPath, { force: true });
-        } else if (
-          target &&
-          (await readIndexedSourcePath(target)) === identity.sourcePath
-        ) {
-          return { indexPath: target, managed: false };
-        } else {
-          throw new Error(
-            `Refusing to replace an unmanaged .codegraph symlink at ${identity.sourcePath}`,
-          );
+        if (target) {
+          if (target === (await realpath(managedIndex)))
+            return { indexPath: target, managed: true };
+          const metadata = await readMetadata(target);
+          if (
+            metadata?.managed &&
+            metadata.sourcePath === identity.sourcePath
+          ) {
+            await rm(linkPath, { force: true });
+          } else if (
+            (await readIndexedSourcePath(target)) === identity.sourcePath
+          ) {
+            return { indexPath: target, managed: false };
+          } else {
+            throw new Error(
+              `Refusing to replace an unmanaged .codegraph symlink at ${identity.sourcePath}`,
+            );
+          }
         }
       } else if (info.isDirectory()) {
         const metadata = await readMetadata(linkPath);
@@ -570,8 +642,6 @@ export class WorkspaceManager {
           `Expected .codegraph to be a directory or symlink: ${linkPath}`,
         );
       }
-    } catch (error) {
-      if (!hasErrorCode(error, "ENOENT")) throw error;
     }
     await existingDirectory(identity.sourcePath);
     const temporary = `${linkPath}.pi-codegraph-${process.pid}`;
