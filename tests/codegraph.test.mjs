@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmod,
@@ -298,6 +299,33 @@ test("keeps a long reindex lock alive with heartbeats", async (t) => {
     ["status", "--json"],
     ["index", "--quiet"],
   ]);
+});
+
+test("RPC ignores late responses, blank lines and notifications without hanging", () => {
+  const moduleUrl = new URL("../dist/lib/jsonrpc.js", import.meta.url).href;
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      `
+    import { PassThrough } from 'node:stream';
+    import { JsonRpcPeer } from ${JSON.stringify(moduleUrl)};
+    const input = new PassThrough();
+    const peer = new JsonRpcPeer(input, new PassThrough());
+    const pending = peer.request('probe');
+    const nl = String.fromCharCode(10);
+    input.write(nl + JSON.stringify({jsonrpc:'2.0',id:999,result:'late'}) + nl +
+      JSON.stringify({jsonrpc:'2.0',method:'notification'}) + nl +
+      JSON.stringify({jsonrpc:'2.0',id:1,result:'ok'}) + nl);
+    if (await pending !== 'ok') process.exit(1);
+    peer.close();
+  `,
+    ],
+    { encoding: "utf8", timeout: 2000 },
+  );
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 0, result.stderr);
 });
 
 test("reuses a legacy CodeGraph symlink for the same source directory", async (t) => {
