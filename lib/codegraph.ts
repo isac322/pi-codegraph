@@ -502,6 +502,7 @@ async function writeMetadata(
 async function acquireLock(
   lockPath: string,
   timeoutMs = 30_000,
+  staleAfterMs = timeoutMs * 2,
 ): Promise<() => Promise<void>> {
   await mkdir(dirname(lockPath), { recursive: true });
   const started = Date.now();
@@ -521,7 +522,7 @@ async function acquireLock(
       if (!hasErrorCode(error, "EEXIST")) throw error;
       try {
         const info = await stat(lockPath);
-        if (Date.now() - info.mtimeMs > timeoutMs * 2)
+        if (Date.now() - info.mtimeMs > staleAfterMs)
           await rm(lockPath, { recursive: true, force: true });
       } catch {
         // Another owner released the lock.
@@ -557,7 +558,15 @@ export class WorkspaceManager {
       .digest("hex");
     const managedIndex = join(this.settings.indexStore, "projects", key);
     const lockPath = join(this.settings.indexStore, "locks", `${key}.lock`);
-    const release = await acquireLock(lockPath, this.settings.requestTimeoutMs);
+    const prepareOptions = {
+      ...options,
+      timeoutMs: options.timeoutMs ?? this.settings.prepareTimeoutMs,
+    };
+    const release = await acquireLock(
+      lockPath,
+      this.settings.requestTimeoutMs,
+      prepareOptions.timeoutMs * 2 + this.settings.requestTimeoutMs,
+    );
     try {
       await existingDirectory(identity.sourcePath);
       const binding = await this.#bind(identity, managedIndex);
@@ -569,7 +578,7 @@ export class WorkspaceManager {
           this.settings,
           identity.sourcePath,
           ["init", "-i"],
-          options,
+          prepareOptions,
         );
         this.reindexChecked.add(binding.indexPath);
       } else {
@@ -592,7 +601,7 @@ export class WorkspaceManager {
           this.settings,
           identity.sourcePath,
           ["sync"],
-          options,
+          prepareOptions,
         );
         this.lastSync.set(identity.sourcePath, Date.now());
       }
@@ -865,6 +874,7 @@ export function publicSettings(settings: CodeGraphSettings): Omit<
     workerIdleTimeoutMs: settings.workerIdleTimeoutMs,
     maxWorkers: settings.maxWorkers,
     requestTimeoutMs: settings.requestTimeoutMs,
+    prepareTimeoutMs: settings.prepareTimeoutMs,
     syncMinIntervalMs: settings.syncMinIntervalMs,
     maxOutputChars: settings.maxOutputChars,
     allowedProjectRoots: settings.allowedProjectRoots,

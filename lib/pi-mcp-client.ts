@@ -83,9 +83,16 @@ export class PiCodeGraphClient {
     await this.start();
     const peer = this.peer;
     if (!peer) throw new Error("pi-codegraph MCP facade did not start");
+    const preparesWorkspace =
+      method === "codegraph/workspace/prepare" ||
+      method === "codegraph/workspace/sync" ||
+      method === "tools/call";
     return peer.request(method, params, {
       signal,
-      timeoutMs: this.settings.requestTimeoutMs,
+      // Tool calls prepare their workspace before the query worker runs.
+      timeoutMs: preparesWorkspace
+        ? this.settings.prepareTimeoutMs + this.settings.requestTimeoutMs
+        : this.settings.requestTimeoutMs,
     });
   }
 
