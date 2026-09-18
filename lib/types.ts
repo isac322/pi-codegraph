@@ -5,6 +5,7 @@ export interface CodeGraphSettings {
   workerIdleTimeoutMs: number;
   maxWorkers: number;
   requestTimeoutMs: number;
+  prepareTimeoutMs: number;
   syncMinIntervalMs: number;
   maxOutputChars: number;
   allowedProjectRoots: string[];

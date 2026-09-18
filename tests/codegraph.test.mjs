@@ -17,8 +17,17 @@ import path from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { normalizeFilesPath, WorkspaceManager } from "../dist/lib/codegraph.js";
-import { defaultSettings } from "../dist/lib/config.js";
+import {
+  normalizeFilesPath,
+  runCodeGraph,
+  WorkspaceManager,
+} from "../dist/lib/codegraph.js";
+import {
+  defaultSettings,
+  loadSettings,
+  settingsEnvironment,
+} from "../dist/lib/config.js";
+import { PiCodeGraphClient } from "../dist/lib/pi-mcp-client.js";
 import { codegraphTools, toolCallLabel } from "../dist/lib/tool-metadata.js";
 
 function workspaceIdentity(sourcePath, suffix) {
@@ -326,6 +335,126 @@ test("RPC ignores late responses, blank lines and notifications without hanging"
   );
   assert.equal(result.error, undefined);
   assert.equal(result.status, 0, result.stderr);
+});
+
+for (const method of ["prepare", "sync"]) {
+  test(`workspace ${method} can outlast the query timeout`, async (t) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "pi-codegraph-slow-"));
+    let client;
+    t.after(async () => {
+      await client?.close();
+      await rm(root, {
+        recursive: true,
+        force: true,
+        maxRetries: 10,
+        retryDelay: 100,
+      });
+    });
+    const sourcePath = path.join(root, "project");
+    await mkdir(sourcePath);
+    // Node acts as a portable fake CLI: `node init -i` / `node sync`.
+    const script = `setTimeout(() => {
+      require('node:fs').writeFileSync('.codegraph/codegraph.db', 'fixture');
+    }, 1500);`;
+    await writeFile(path.join(sourcePath, "init"), script);
+    await writeFile(path.join(sourcePath, "sync"), script);
+    if (method === "sync") {
+      await mkdir(path.join(sourcePath, ".codegraph"));
+      await writeFile(
+        path.join(sourcePath, ".codegraph/codegraph.db"),
+        "fixture",
+      );
+    }
+    client = new PiCodeGraphClient(
+      {
+        ...defaultSettings,
+        autoSync: false,
+        autoGc: false,
+        requestTimeoutMs: 1000,
+        prepareTimeoutMs: 5000,
+        indexStore: path.join(root, "indexes"),
+        codegraphExecutable: process.execPath,
+      },
+      sourcePath,
+    );
+    const result = await client.request(`codegraph/workspace/${method}`);
+    assert.equal(result.state, "ready");
+  });
+}
+
+for (const outcome of ["timeout", "abort"]) {
+  test(`workspace preparation still supports ${outcome}`, async (t) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "pi-codegraph-cancel-"));
+    t.after(() =>
+      rm(root, {
+        recursive: true,
+        force: true,
+        maxRetries: 10,
+        retryDelay: 100,
+      }),
+    );
+    const sourcePath = path.join(root, "project");
+    await mkdir(path.join(sourcePath, ".codegraph"), { recursive: true });
+    await writeFile(
+      path.join(sourcePath, ".codegraph/codegraph.db"),
+      "fixture",
+    );
+    await writeFile(
+      path.join(sourcePath, "sync"),
+      "setTimeout(() => {}, 1500)",
+    );
+    const manager = new WorkspaceManager({
+      ...defaultSettings,
+      requestTimeoutMs: 5000,
+      prepareTimeoutMs: outcome === "timeout" ? 100 : 5000,
+      indexStore: path.join(root, "indexes"),
+      codegraphExecutable: process.execPath,
+    });
+    await assert.rejects(
+      manager.prepare(
+        {
+          sourcePath,
+          repoRoot: sourcePath,
+          repoIdentity: "repo",
+          worktreeIdentity: "worktree",
+          gitCommonDir: "",
+        },
+        outcome === "abort" ? { signal: AbortSignal.timeout(500) } : {},
+      ),
+      outcome === "timeout" ? { code: "ETIMEDOUT" } : { name: "AbortError" },
+    );
+  });
+}
+
+test("query command timeout remains short", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pi-codegraph-query-"));
+  t.after(() =>
+    rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }),
+  );
+  await writeFile(path.join(root, "query"), "setTimeout(() => {}, 1500)");
+  await assert.rejects(
+    runCodeGraph(
+      {
+        ...defaultSettings,
+        requestTimeoutMs: 100,
+        prepareTimeoutMs: 5000,
+        codegraphExecutable: process.execPath,
+      },
+      root,
+      ["query"],
+    ),
+    { code: "ETIMEDOUT" },
+  );
+});
+
+test("preparation budget propagates to the facade environment", async () => {
+  const settings = await loadSettings({ prepareTimeoutMs: 123000 });
+  assert.equal(settings.prepareTimeoutMs, 123000);
+  assert.equal(
+    settingsEnvironment(settings, process.cwd())
+      .PI_CODEGRAPH_PREPARE_TIMEOUT_MS,
+    "123000",
+  );
 });
 
 test("reuses a legacy CodeGraph symlink for the same source directory", async (t) => {

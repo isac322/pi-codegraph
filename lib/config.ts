@@ -27,6 +27,7 @@ export const defaultSettings: Readonly<CodeGraphSettings> = Object.freeze({
   workerIdleTimeoutMs: 5 * 60_000,
   maxWorkers: 6,
   requestTimeoutMs: 30_000,
+  prepareTimeoutMs: 30 * 60_000,
   syncMinIntervalMs: 15_000,
   maxOutputChars: 60_000,
   allowedProjectRoots: [],
@@ -82,6 +83,11 @@ function normalizeSettings(input: Record<string, unknown>): CodeGraphSettings {
       defaultSettings.requestTimeoutMs,
       1_000,
     ),
+    prepareTimeoutMs: integerValue(
+      input.prepareTimeoutMs,
+      defaultSettings.prepareTimeoutMs,
+      1_000,
+    ),
     syncMinIntervalMs: integerValue(
       input.syncMinIntervalMs,
       defaultSettings.syncMinIntervalMs,
@@ -134,6 +140,7 @@ export async function loadSettings(
     workerIdleTimeoutMs: process.env.PI_CODEGRAPH_WORKER_IDLE_MS,
     maxWorkers: process.env.PI_CODEGRAPH_MAX_WORKERS,
     requestTimeoutMs: process.env.PI_CODEGRAPH_REQUEST_TIMEOUT_MS,
+    prepareTimeoutMs: process.env.PI_CODEGRAPH_PREPARE_TIMEOUT_MS,
     syncMinIntervalMs: process.env.PI_CODEGRAPH_SYNC_MIN_INTERVAL_MS,
     maxOutputChars: process.env.PI_CODEGRAPH_MAX_OUTPUT_CHARS,
     allowedProjectRoots: process.env.PI_CODEGRAPH_ALLOWED_ROOTS,
@@ -168,6 +175,7 @@ export function settingsEnvironment(
     PI_CODEGRAPH_WORKER_IDLE_MS: String(settings.workerIdleTimeoutMs),
     PI_CODEGRAPH_MAX_WORKERS: String(settings.maxWorkers),
     PI_CODEGRAPH_REQUEST_TIMEOUT_MS: String(settings.requestTimeoutMs),
+    PI_CODEGRAPH_PREPARE_TIMEOUT_MS: String(settings.prepareTimeoutMs),
     PI_CODEGRAPH_SYNC_MIN_INTERVAL_MS: String(settings.syncMinIntervalMs),
     PI_CODEGRAPH_MAX_OUTPUT_CHARS: String(settings.maxOutputChars),
     PI_CODEGRAPH_ALLOWED_ROOTS: settings.allowedProjectRoots.join(

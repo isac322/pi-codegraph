@@ -64,6 +64,7 @@ Global configuration is read from `~/.config/pi-codegraph/config.json`, or from 
   "workerIdleTimeoutMs": 300000,
   "maxWorkers": 6,
   "requestTimeoutMs": 30000,
+  "prepareTimeoutMs": 1800000,
   "syncMinIntervalMs": 15000,
   "maxOutputChars": 60000,
   "allowedProjectRoots": ["/work/company"],
@@ -80,6 +81,7 @@ Environment overrides:
 - `PI_CODEGRAPH_WORKER_IDLE_MS`
 - `PI_CODEGRAPH_MAX_WORKERS`
 - `PI_CODEGRAPH_REQUEST_TIMEOUT_MS`
+- `PI_CODEGRAPH_PREPARE_TIMEOUT_MS`
 - `PI_CODEGRAPH_SYNC_MIN_INTERVAL_MS`
 - `PI_CODEGRAPH_MAX_OUTPUT_CHARS`
 - `PI_CODEGRAPH_ALLOWED_ROOTS`
@@ -87,6 +89,14 @@ Environment overrides:
 - `PI_CODEGRAPH_EXECUTABLE`
 
 `PI_CODEGRAPH_ALLOWED_ROOTS` uses the platform path delimiter.
+
+`prepareTimeoutMs` bounds each index initialization or synchronization command
+(default: 30 minutes). `requestTimeoutMs` still bounds daemon queries, handshake,
+status, and lock waits (default: 30 seconds). The Pi facade allows preparation plus
+one request budget for workspace preparation, manual sync, and tool calls that
+prepare a workspace before querying. Large first indexes can therefore take
+minutes to become ready; no source paths are excluded by this setting. An OMP or
+other MCP host may also impose its own outer request timeout.
 
 ## Runtime behavior
 
