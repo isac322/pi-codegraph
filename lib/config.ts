@@ -30,6 +30,7 @@ export const defaultSettings: Readonly<CodeGraphSettings> = Object.freeze({
   syncMinIntervalMs: 15_000,
   maxOutputChars: 60_000,
   allowedProjectRoots: [],
+  excludedProjectRoots: [],
   promptInjection: true,
   codegraphExecutable: "",
   configFile: path.join(configHome, "pi-codegraph", "config.json"),
@@ -46,6 +47,13 @@ function booleanValue(value: unknown, fallback: boolean): boolean {
 function integerValue(value: unknown, fallback: number, minimum = 0): number {
   const parsed = Number.parseInt(String(value ?? ""), 10);
   return Number.isFinite(parsed) && parsed >= minimum ? parsed : fallback;
+}
+
+function expandHome(input: string): string {
+  if (input === "~") return os.homedir();
+  if (input.startsWith("~/") || input.startsWith(`~${path.sep}`))
+    return path.join(os.homedir(), input.slice(2));
+  return input;
 }
 
 function stringArray(value: unknown, fallback: string[] = []): string[] {
@@ -95,6 +103,9 @@ function normalizeSettings(input: Record<string, unknown>): CodeGraphSettings {
     allowedProjectRoots: stringArray(input.allowedProjectRoots).map((root) =>
       path.resolve(root),
     ),
+    excludedProjectRoots: stringArray(input.excludedProjectRoots).map((root) =>
+      path.resolve(expandHome(root)),
+    ),
     promptInjection: booleanValue(
       input.promptInjection,
       defaultSettings.promptInjection,
@@ -137,6 +148,7 @@ export async function loadSettings(
     syncMinIntervalMs: process.env.PI_CODEGRAPH_SYNC_MIN_INTERVAL_MS,
     maxOutputChars: process.env.PI_CODEGRAPH_MAX_OUTPUT_CHARS,
     allowedProjectRoots: process.env.PI_CODEGRAPH_ALLOWED_ROOTS,
+    excludedProjectRoots: process.env.PI_CODEGRAPH_EXCLUDED_ROOTS,
     promptInjection: process.env.PI_CODEGRAPH_PROMPT_INJECTION,
     codegraphExecutable: process.env.PI_CODEGRAPH_EXECUTABLE,
     configFile,
@@ -171,6 +183,9 @@ export function settingsEnvironment(
     PI_CODEGRAPH_SYNC_MIN_INTERVAL_MS: String(settings.syncMinIntervalMs),
     PI_CODEGRAPH_MAX_OUTPUT_CHARS: String(settings.maxOutputChars),
     PI_CODEGRAPH_ALLOWED_ROOTS: settings.allowedProjectRoots.join(
+      path.delimiter,
+    ),
+    PI_CODEGRAPH_EXCLUDED_ROOTS: settings.excludedProjectRoots.join(
       path.delimiter,
     ),
     PI_CODEGRAPH_PROMPT_INJECTION: String(settings.promptInjection),

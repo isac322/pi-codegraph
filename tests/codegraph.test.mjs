@@ -25,7 +25,7 @@ import {
   normalizeFilesPath,
   WorkspaceManager,
 } from "../dist/lib/codegraph.js";
-import { defaultSettings } from "../dist/lib/config.js";
+import { defaultSettings, loadSettings } from "../dist/lib/config.js";
 import { codegraphTools, toolCallLabel } from "../dist/lib/tool-metadata.js";
 
 function workspaceIdentity(sourcePath, suffix) {
@@ -620,22 +620,73 @@ test("lazily repairs a managed link after garbage collection", async (t) => {
   assert.equal(await realpath(linkPath), await realpath(expectedIndex));
 });
 
-test("refuses to index non-Git temporary and home roots", async (t) => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "pi-codegraph-test-"));
+test("refuses only projects matched by excludedProjectRoots", async (t) => {
+  const root = await realpath(
+    await mkdtemp(path.join(os.tmpdir(), "pi-codegraph-test-")),
+  );
   t.after(() => rm(root, { recursive: true, force: true }));
 
+  const exact = path.join(root, "scratch");
+  const belowExact = path.join(exact, "repo");
+  const tree = path.join(root, "tree");
+  const belowTree = path.join(tree, "repo");
+  for (const directory of [belowExact, belowTree])
+    await mkdir(directory, { recursive: true });
   const indexStore = path.join(root, "managed");
+  const fake = await createFakeCodeGraph(root, { initialState: "current" });
   const manager = new WorkspaceManager({
     ...defaultSettings,
+    autoSync: false,
     autoGc: false,
     indexStore,
-    codegraphExecutable: path.join(root, "never-run"),
+    codegraphExecutable: fake.executable,
+    excludedProjectRoots: [exact, path.join(tree, "**")],
   });
-  for (const excluded of [os.tmpdir(), os.homedir()]) {
-    const identity = workspaceIdentity(await realpath(excluded), "excluded");
-    await assert.rejects(manager.prepare(identity), /does not index/);
+
+  for (const excluded of [exact, tree, belowTree]) {
+    const identity = workspaceIdentity(excluded, "excluded");
+    await assert.rejects(manager.prepare(identity), /excludedProjectRoots/);
+    await assert.rejects(readlink(path.join(excluded, ".codegraph")), {
+      code: "ENOENT",
+    });
   }
-  await assert.rejects(readdir(indexStore), { code: "ENOENT" });
+  const allowed = workspaceIdentity(belowExact, "below-exact");
+  const expectedIndex = await createManagedDatabase(indexStore, allowed);
+  const prepared = await manager.prepare(allowed);
+
+  assert.equal(prepared.indexPath, await realpath(expectedIndex));
+  assert.deepEqual(await readdir(path.join(indexStore, "projects")), [
+    path.basename(expectedIndex),
+  ]);
+});
+
+test("reads excludedProjectRoots from config and environment", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pi-codegraph-test-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configFile = path.join(root, "config.json");
+  await writeFile(
+    configFile,
+    JSON.stringify({ excludedProjectRoots: ["~/scratch", "/tmp/**"] }),
+  );
+  const previous = process.env.PI_CODEGRAPH_EXCLUDED_ROOTS;
+  t.after(() => {
+    if (previous === undefined) delete process.env.PI_CODEGRAPH_EXCLUDED_ROOTS;
+    else process.env.PI_CODEGRAPH_EXCLUDED_ROOTS = previous;
+  });
+
+  delete process.env.PI_CODEGRAPH_EXCLUDED_ROOTS;
+  assert.deepEqual((await loadSettings({ configFile })).excludedProjectRoots, [
+    path.join(os.homedir(), "scratch"),
+    path.join(path.sep, "tmp", "**"),
+  ]);
+
+  process.env.PI_CODEGRAPH_EXCLUDED_ROOTS = ["/a", "/b/**"].join(
+    path.delimiter,
+  );
+  assert.deepEqual((await loadSettings({ configFile })).excludedProjectRoots, [
+    path.resolve("/a"),
+    path.resolve("/b/**"),
+  ]);
 });
 
 test("does not leave an empty managed index for an in-repo .codegraph", async (t) => {
@@ -687,9 +738,20 @@ test("collects abandoned and excluded-root indexes", async (t) => {
     }
     return indexPath;
   };
-  const tmpIdentity = await gitIdentity(os.tmpdir());
+  const excludedSource = path.join(root, "excluded");
+  const keptSource = path.join(root, "kept");
+  await mkdir(excludedSource);
+  await mkdir(keptSource);
+  const managedFor = async (source) => ({
+    schemaVersion: 2,
+    managed: true,
+    ...(await gitIdentity(source)),
+  });
   const excludedRoot = await createIndex("excluded-root", {
-    metadata: { schemaVersion: 2, managed: true, ...tmpIdentity },
+    metadata: await managedFor(excludedSource),
+  });
+  const kept = await createIndex("kept", {
+    metadata: await managedFor(keptSource),
   });
   const abandoned = await createIndex("abandoned", { age: twoDaysAgo });
   const fresh = await createIndex("fresh");
@@ -698,11 +760,16 @@ test("collects abandoned and excluded-root indexes", async (t) => {
     recursive: true,
   });
 
-  const manager = new WorkspaceManager({ ...defaultSettings, indexStore });
+  const manager = new WorkspaceManager({
+    ...defaultSettings,
+    indexStore,
+    excludedProjectRoots: [excludedSource],
+  });
   const collected = await manager.gc(new Set(), true);
 
   assert.deepEqual(collected.removed.sort(), [abandoned, excludedRoot].sort());
   assert.ok((await stat(fresh)).isDirectory());
+  assert.ok((await stat(kept)).isDirectory());
   assert.ok((await stat(locked)).isDirectory());
 });
 

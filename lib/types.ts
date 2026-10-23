@@ -8,6 +8,7 @@ export interface CodeGraphSettings {
   syncMinIntervalMs: number;
   maxOutputChars: number;
   allowedProjectRoots: string[];
+  excludedProjectRoots: string[];
   promptInjection: boolean;
   codegraphExecutable: string;
   configFile: string;

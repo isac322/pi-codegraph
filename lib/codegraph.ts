@@ -23,7 +23,6 @@ import {
   dirname,
   isAbsolute,
   join,
-  parse,
   relative,
   resolve,
   sep,
@@ -279,36 +278,27 @@ function isWithin(child: string, parent: string): boolean {
   );
 }
 
-async function unindexableRoots(): Promise<Set<string>> {
-  const roots = new Set<string>();
-  for (const candidate of [
-    os.homedir(),
-    os.tmpdir(),
-    process.env.TMPDIR,
-    "/tmp",
-    "/var/tmp",
-  ]) {
-    if (!candidate) continue;
-    try {
-      roots.add(await realpath(candidate));
-    } catch {
-      // The directory does not exist on this platform.
-    }
-  }
-  return roots;
-}
-
-export async function unindexableReason(
-  identity: WorkspaceIdentity,
+// An entry excludes exactly that project root; an entry ending in "/**" also
+// excludes every project below it.
+export async function excludedProjectReason(
+  sourcePath: string,
+  excludedRoots: readonly string[],
 ): Promise<string | undefined> {
-  if (identity.gitCommonDir) return undefined;
-  const { sourcePath } = identity;
-  if (
-    sourcePath !== parse(sourcePath).root &&
-    !(await unindexableRoots()).has(sourcePath)
-  )
-    return undefined;
-  return `CodeGraph does not index ${sourcePath}: it is not a Git repository and is a filesystem, home, or temporary directory root. Open a project directory or pass a projectPath inside one.`;
+  const subtreeSuffix = `${sep}**`;
+  for (const entry of excludedRoots) {
+    const subtree = entry.endsWith(subtreeSuffix);
+    let root: string;
+    try {
+      root = await realpath(
+        subtree ? entry.slice(0, -subtreeSuffix.length) || sep : entry,
+      );
+    } catch {
+      continue;
+    }
+    if (subtree ? isWithin(sourcePath, root) : sourcePath === root)
+      return `CodeGraph does not index ${sourcePath}: it matches the excludedProjectRoots entry "${entry}".`;
+  }
+  return undefined;
 }
 
 export class ProjectGuard {
@@ -611,7 +601,10 @@ export class WorkspaceManager {
     options: CodeGraphRunOptions = {},
   ) {
     await existingDirectory(identity.sourcePath);
-    const excluded = await unindexableReason(identity);
+    const excluded = await excludedProjectReason(
+      identity.sourcePath,
+      this.settings.excludedProjectRoots,
+    );
     if (excluded) throw new Error(excluded);
     const key = createHash("sha256")
       .update(
@@ -882,7 +875,12 @@ export class WorkspaceManager {
           stale =
             identity.repoIdentity !== metadata.repoIdentity ||
             identity.worktreeIdentity !== metadata.worktreeIdentity ||
-            Boolean(await unindexableReason(identity));
+            Boolean(
+              await excludedProjectReason(
+                identity.sourcePath,
+                this.settings.excludedProjectRoots,
+              ),
+            );
         } catch {
           stale = true;
         }
@@ -911,10 +909,13 @@ export class WorkspaceManager {
   }
 }
 
-export async function workspaceSummary(cwd: string): Promise<WorkspaceStatus> {
+export async function workspaceSummary(
+  cwd: string,
+  excludedRoots: readonly string[] = [],
+): Promise<WorkspaceStatus> {
   try {
     const identity = await gitIdentity(cwd);
-    if (await unindexableReason(identity))
+    if (await excludedProjectReason(identity.sourcePath, excludedRoots))
       return {
         state: "excluded",
         sourcePath: identity.sourcePath,
@@ -964,6 +965,7 @@ export function publicSettings(settings: CodeGraphSettings): Omit<
     syncMinIntervalMs: settings.syncMinIntervalMs,
     maxOutputChars: settings.maxOutputChars,
     allowedProjectRoots: settings.allowedProjectRoots,
+    excludedProjectRoots: settings.excludedProjectRoots,
     promptInjection: settings.promptInjection,
     codegraphExecutable: settings.codegraphExecutable || "auto",
     configFile: settings.configFile,

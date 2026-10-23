@@ -133,7 +133,11 @@ export default async function piCodeGraphExtension(
   pi.on("session_start", async (_event, ctx) => {
     sessionCwd = ctx.cwd || process.cwd();
     if (!(await trusted(ctx))) return;
-    if ((await workspaceSummary(sessionCwd)).state === "excluded") return;
+    const summary = await workspaceSummary(
+      sessionCwd,
+      settings.excludedProjectRoots,
+    );
+    if (summary.state === "excluded") return;
     ctx.ui?.setStatus?.("codegraph", "CodeGraph indexing");
     try {
       const activeClient = await getClient(sessionCwd, ctx);
@@ -153,7 +157,7 @@ export default async function piCodeGraphExtension(
   pi.on("before_agent_start", async (event, ctx) => {
     if (!settings.promptInjection || !(await trusted(ctx))) return;
     const cwd = ctx.cwd || sessionCwd || process.cwd();
-    const status = await workspaceSummary(cwd);
+    const status = await workspaceSummary(cwd, settings.excludedProjectRoots);
     if (status.state === "excluded") return;
     const guidance = buildCodeGraphPrompt({ runtime: "pi", cwd, status });
     return {
