@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/isac322/pi-codegraph/compare/pi-codegraph-v0.4.0...pi-codegraph-v0.5.0) (2026-10-23)
+
+
+### Features
+
+* configurable indexing exclusions and index disk reclamation ([#24](https://github.com/isac322/pi-codegraph/issues/24)) ([67b4586](https://github.com/isac322/pi-codegraph/commit/67b4586f9ee943a864429c1b5d8f591cdac36ef4))
+
 ## [0.4.0](https://github.com/isac322/pi-codegraph/compare/pi-codegraph-v0.3.1...pi-codegraph-v0.4.0) (2026-09-14)
 
 
