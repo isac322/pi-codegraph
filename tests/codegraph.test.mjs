@@ -4,20 +4,28 @@ import {
   chmod,
   mkdir,
   mkdtemp,
+  readdir,
   readFile,
   readlink,
   realpath,
   rm,
+  stat,
   symlink,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { normalizeFilesPath, WorkspaceManager } from "../dist/lib/codegraph.js";
-import { defaultSettings } from "../dist/lib/config.js";
+import {
+  gitIdentity,
+  normalizeFilesPath,
+  WorkspaceManager,
+} from "../dist/lib/codegraph.js";
+import { defaultSettings, loadSettings } from "../dist/lib/config.js";
 import { codegraphTools, toolCallLabel } from "../dist/lib/tool-metadata.js";
 
 function workspaceIdentity(sourcePath, suffix) {
@@ -610,4 +618,189 @@ test("lazily repairs a managed link after garbage collection", async (t) => {
 
   assert.equal(prepared.indexPath, await realpath(expectedIndex));
   assert.equal(await realpath(linkPath), await realpath(expectedIndex));
+});
+
+test("refuses only projects matched by excludedProjectRoots", async (t) => {
+  const root = await realpath(
+    await mkdtemp(path.join(os.tmpdir(), "pi-codegraph-test-")),
+  );
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const exact = path.join(root, "scratch");
+  const belowExact = path.join(exact, "repo");
+  const tree = path.join(root, "tree");
+  const belowTree = path.join(tree, "repo");
+  for (const directory of [belowExact, belowTree])
+    await mkdir(directory, { recursive: true });
+  const indexStore = path.join(root, "managed");
+  const fake = await createFakeCodeGraph(root, { initialState: "current" });
+  const manager = new WorkspaceManager({
+    ...defaultSettings,
+    autoSync: false,
+    autoGc: false,
+    indexStore,
+    codegraphExecutable: fake.executable,
+    excludedProjectRoots: [exact, path.join(tree, "**")],
+  });
+
+  for (const excluded of [exact, tree, belowTree]) {
+    const identity = workspaceIdentity(excluded, "excluded");
+    await assert.rejects(manager.prepare(identity), /excludedProjectRoots/);
+    await assert.rejects(readlink(path.join(excluded, ".codegraph")), {
+      code: "ENOENT",
+    });
+  }
+  const allowed = workspaceIdentity(belowExact, "below-exact");
+  const expectedIndex = await createManagedDatabase(indexStore, allowed);
+  const prepared = await manager.prepare(allowed);
+
+  assert.equal(prepared.indexPath, await realpath(expectedIndex));
+  assert.deepEqual(await readdir(path.join(indexStore, "projects")), [
+    path.basename(expectedIndex),
+  ]);
+});
+
+test("reads excludedProjectRoots from config and environment", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pi-codegraph-test-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configFile = path.join(root, "config.json");
+  await writeFile(
+    configFile,
+    JSON.stringify({ excludedProjectRoots: ["~/scratch", "/tmp/**"] }),
+  );
+  const previous = process.env.PI_CODEGRAPH_EXCLUDED_ROOTS;
+  t.after(() => {
+    if (previous === undefined) delete process.env.PI_CODEGRAPH_EXCLUDED_ROOTS;
+    else process.env.PI_CODEGRAPH_EXCLUDED_ROOTS = previous;
+  });
+
+  delete process.env.PI_CODEGRAPH_EXCLUDED_ROOTS;
+  assert.deepEqual((await loadSettings({ configFile })).excludedProjectRoots, [
+    path.join(os.homedir(), "scratch"),
+    path.join(path.sep, "tmp", "**"),
+  ]);
+
+  process.env.PI_CODEGRAPH_EXCLUDED_ROOTS = ["/a", "/b/**"].join(
+    path.delimiter,
+  );
+  assert.deepEqual((await loadSettings({ configFile })).excludedProjectRoots, [
+    path.resolve("/a"),
+    path.resolve("/b/**"),
+  ]);
+});
+
+test("does not leave an empty managed index for an in-repo .codegraph", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pi-codegraph-test-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const sourcePath = path.join(root, "project");
+  const indexStore = path.join(root, "managed");
+  await mkdir(path.join(sourcePath, ".codegraph"), { recursive: true });
+  await writeFile(path.join(sourcePath, ".codegraph", "codegraph.db"), "");
+  const fake = await createFakeCodeGraph(root, { initialState: "current" });
+  const manager = new WorkspaceManager({
+    ...defaultSettings,
+    autoSync: false,
+    autoGc: false,
+    indexStore,
+    codegraphExecutable: fake.executable,
+  });
+
+  const prepared = await manager.prepare(
+    workspaceIdentity(sourcePath, "in-repo"),
+  );
+
+  assert.equal(prepared.indexPath, path.join(sourcePath, ".codegraph"));
+  await assert.rejects(readdir(path.join(indexStore, "projects")), {
+    code: "ENOENT",
+  });
+});
+
+test("collects abandoned and excluded-root indexes", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pi-codegraph-test-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const indexStore = path.join(root, "managed");
+  const projects = path.join(indexStore, "projects");
+  const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60_000);
+  const createIndex = async (name, { age, metadata } = {}) => {
+    const indexPath = path.join(projects, name);
+    await mkdir(indexPath, { recursive: true });
+    await writeFile(path.join(indexPath, "codegraph.db"), "");
+    if (metadata)
+      await writeFile(
+        path.join(indexPath, ".pi-codegraph.json"),
+        `${JSON.stringify(metadata)}\n`,
+      );
+    if (age) {
+      await utimes(path.join(indexPath, "codegraph.db"), age, age);
+      await utimes(indexPath, age, age);
+    }
+    return indexPath;
+  };
+  const excludedSource = path.join(root, "excluded");
+  const keptSource = path.join(root, "kept");
+  await mkdir(excludedSource);
+  await mkdir(keptSource);
+  const managedFor = async (source) => ({
+    schemaVersion: 2,
+    managed: true,
+    ...(await gitIdentity(source)),
+  });
+  const excludedRoot = await createIndex("excluded-root", {
+    metadata: await managedFor(excludedSource),
+  });
+  const kept = await createIndex("kept", {
+    metadata: await managedFor(keptSource),
+  });
+  const abandoned = await createIndex("abandoned", { age: twoDaysAgo });
+  const fresh = await createIndex("fresh");
+  const locked = await createIndex("locked", { age: twoDaysAgo });
+  await mkdir(path.join(indexStore, "locks", "locked.lock"), {
+    recursive: true,
+  });
+
+  const manager = new WorkspaceManager({
+    ...defaultSettings,
+    indexStore,
+    excludedProjectRoots: [excludedSource],
+  });
+  const collected = await manager.gc(new Set(), true);
+
+  assert.deepEqual(collected.removed.sort(), [abandoned, excludedRoot].sort());
+  assert.ok((await stat(fresh)).isDirectory());
+  assert.ok((await stat(kept)).isDirectory());
+  assert.ok((await stat(locked)).isDirectory());
+});
+
+test("truncates the CodeGraph write-ahead log after syncing", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pi-codegraph-test-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const sourcePath = path.join(root, "project");
+  const indexStore = path.join(root, "managed");
+  const identity = workspaceIdentity(sourcePath, "wal");
+  await mkdir(sourcePath);
+  const indexPath = managedIndexPath(indexStore, identity);
+  await mkdir(indexPath, { recursive: true });
+  const database = path.join(indexPath, "codegraph.db");
+  const writer = new DatabaseSync(database);
+  t.after(() => writer.close());
+  writer.exec("PRAGMA journal_mode = WAL");
+  writer.exec("PRAGMA wal_autocheckpoint = 0");
+  writer.exec("CREATE TABLE nodes (body BLOB)");
+  writer.prepare("INSERT INTO nodes VALUES (?)").run(Buffer.alloc(1 << 20));
+  assert.ok((await stat(`${database}-wal`)).size > 1 << 20);
+  const fake = await createFakeCodeGraph(root, { initialState: "current" });
+  const manager = new WorkspaceManager({
+    ...defaultSettings,
+    autoGc: false,
+    indexStore,
+    codegraphExecutable: fake.executable,
+  });
+
+  await manager.prepare(identity, { forceSync: true });
+
+  assert.equal((await stat(`${database}-wal`)).size, 0);
+  assert.equal(writer.prepare("SELECT count(*) AS n FROM nodes").get().n, 1);
 });

@@ -226,10 +226,15 @@ async function shutdown() {
   await pool.close();
 }
 
+function collectGarbage() {
+  manager.gc(pool.activeProjects()).catch(() => undefined);
+}
+
 if (settings.autoGc) {
-  gcTimer = setInterval(() => {
-    void manager.gc(pool.activeProjects());
-  }, 60 * 60_000);
+  // OMP sessions often end before the hourly timer fires, so collect once at
+  // startup as well.
+  collectGarbage();
+  gcTimer = setInterval(collectGarbage, 60 * 60_000);
   gcTimer.unref?.();
 }
 process.on("SIGTERM", () => {

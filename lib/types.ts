@@ -8,6 +8,7 @@ export interface CodeGraphSettings {
   syncMinIntervalMs: number;
   maxOutputChars: number;
   allowedProjectRoots: string[];
+  excludedProjectRoots: string[];
   promptInjection: boolean;
   codegraphExecutable: string;
   configFile: string;
@@ -22,7 +23,7 @@ export interface WorkspaceIdentity {
 }
 
 export interface WorkspaceStatus {
-  state: "ready" | "uninitialized" | "missing" | string;
+  state: "ready" | "uninitialized" | "missing" | "excluded" | string;
   sourcePath: string;
   indexPath: string | null;
   lastSyncAt: string | number | null;

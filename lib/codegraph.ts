@@ -38,6 +38,7 @@ const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
 const metadataName = ".pi-codegraph.json";
 const emptyFilesMarker = "No files found matching the criteria.";
+const orphanGraceMs = 24 * 60 * 60_000;
 const ansiEscapePattern = new RegExp(
   `${String.fromCodePoint(27)}\\[[0-9;]*m`,
   "g",
@@ -277,6 +278,28 @@ function isWithin(child: string, parent: string): boolean {
   );
 }
 
+// An entry excludes exactly that project root; an entry ending in "/**" also
+// excludes every project below it.
+export async function excludedProjectReason(
+  sourcePath: string,
+  excludedRoots: readonly string[],
+): Promise<string | undefined> {
+  const subtreeSuffix = `${sep}**`;
+  for (const entry of excludedRoots) {
+    const subtree = entry.endsWith(subtreeSuffix);
+    let root: string;
+    try {
+      // Keep the separator so "/**" and "C:\**" resolve to the drive root.
+      root = await realpath(subtree ? entry.slice(0, -2) : entry);
+    } catch {
+      continue;
+    }
+    if (subtree ? isWithin(sourcePath, root) : sourcePath === root)
+      return `CodeGraph does not index ${sourcePath}: it matches the excludedProjectRoots entry "${entry}".`;
+  }
+  return undefined;
+}
+
 export class ProjectGuard {
   readonly base: WorkspaceIdentity;
   readonly allowedRoots: string[];
@@ -499,6 +522,35 @@ async function writeMetadata(
   await rename(temporary, target);
 }
 
+// CodeGraph keeps its SQLite database in WAL mode. SQLite's automatic
+// checkpoints copy pages back but never shrink the WAL file, so one large
+// indexing transaction leaves a WAL as large as the data it wrote.
+async function truncateWriteAheadLog(database: string): Promise<void> {
+  // Opening a missing path would create an empty database that looks ready.
+  if (!(await exists(database))) return;
+  try {
+    // Loaded lazily: OMP imports this module under Bun, which lacks node:sqlite.
+    const { DatabaseSync } = await import("node:sqlite");
+    const db = new DatabaseSync(database);
+    try {
+      db.exec("PRAGMA busy_timeout = 1000");
+      db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    } finally {
+      db.close();
+    }
+  } catch {
+    // A reader holding the WAL or a missing SQLite runtime only delays reclamation.
+  }
+}
+
+async function newestModification(path: string): Promise<number> {
+  let newest = (await lstat(path)).mtimeMs;
+  for (const entry of await readdir(path)) {
+    newest = Math.max(newest, (await lstat(join(path, entry))).mtimeMs);
+  }
+  return newest;
+}
+
 async function acquireLock(
   lockPath: string,
   timeoutMs = 30_000,
@@ -550,6 +602,11 @@ export class WorkspaceManager {
     options: CodeGraphRunOptions = {},
   ) {
     await existingDirectory(identity.sourcePath);
+    const excluded = await excludedProjectReason(
+      identity.sourcePath,
+      this.settings.excludedProjectRoots,
+    );
+    if (excluded) throw new Error(excluded);
     const key = createHash("sha256")
       .update(
         `${identity.repoIdentity}\0${identity.worktreeIdentity}\0${identity.sourcePath}`,
@@ -596,6 +653,8 @@ export class WorkspaceManager {
         );
         this.lastSync.set(identity.sourcePath, Date.now());
       }
+      if (!databaseExists || reindexed || shouldSync)
+        await truncateWriteAheadLog(database);
       const metadata = {
         schemaVersion: 2,
         sourcePath: identity.sourcePath,
@@ -651,7 +710,6 @@ export class WorkspaceManager {
     managedIndex: string,
   ): Promise<{ indexPath: string; managed: boolean }> {
     const linkPath = join(identity.sourcePath, ".codegraph");
-    await mkdir(managedIndex, { recursive: true });
     let info: Stats | undefined;
     try {
       info = await lstat(linkPath);
@@ -687,7 +745,7 @@ export class WorkspaceManager {
           target = "";
         }
         if (target) {
-          if (target === (await realpath(managedIndex)))
+          if (target === (await canonicalizePath(managedIndex)))
             return { indexPath: target, managed: true };
           const metadata = await readMetadata(target);
           if (
@@ -724,6 +782,7 @@ export class WorkspaceManager {
       }
     }
     await existingDirectory(identity.sourcePath);
+    await mkdir(managedIndex, { recursive: true });
     const temporary = `${linkPath}.pi-codegraph-${process.pid}`;
     await rm(temporary, { force: true });
     await symlink(managedIndex, temporary, "dir");
@@ -797,8 +856,20 @@ export class WorkspaceManager {
       if (!entry.isDirectory()) continue;
       const indexPath = join(projectsRoot, entry.name);
       const metadata = await readMetadata(indexPath);
+      if (!metadata) {
+        if (
+          (await this.#isAbandonedOrphan(indexPath)) &&
+          (await this.#removeLocked(
+            indexPath,
+            entry.name,
+            async () => !(await readMetadata(indexPath)),
+          ))
+        )
+          removed.push(indexPath);
+        continue;
+      }
       if (
-        !metadata?.managed ||
+        !metadata.managed ||
         typeof metadata.sourcePath !== "string" ||
         activeProjects.has(metadata.sourcePath)
       )
@@ -809,23 +880,77 @@ export class WorkspaceManager {
           const identity = await gitIdentity(metadata.sourcePath);
           stale =
             identity.repoIdentity !== metadata.repoIdentity ||
-            identity.worktreeIdentity !== metadata.worktreeIdentity;
+            identity.worktreeIdentity !== metadata.worktreeIdentity ||
+            Boolean(
+              await excludedProjectReason(
+                identity.sourcePath,
+                this.settings.excludedProjectRoots,
+              ),
+            );
         } catch {
           stale = true;
         }
       }
-      if (stale) {
-        await rm(indexPath, { recursive: true, force: true });
+      if (stale && (await this.#removeLocked(indexPath, entry.name)))
         removed.push(indexPath);
-      }
     }
     return { removed };
   }
+
+  // Every successful prepare writes metadata, so an index without it was
+  // abandoned before its first prepare finished. Keep recent ones, which may
+  // belong to an interrupted run that will be retried.
+  async #isAbandonedOrphan(indexPath: string): Promise<boolean> {
+    try {
+      return (
+        Date.now() - (await newestModification(indexPath)) >= orphanGraceMs
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  // Deletes while holding the index's prepare lock, so a concurrent prepare
+  // never binds to a directory that is being removed. A held lock skips the
+  // index until the next collection.
+  async #removeLocked(
+    indexPath: string,
+    key: string,
+    stillRemovable: () => Promise<boolean> = async () => true,
+  ): Promise<boolean> {
+    const lockPath = join(this.settings.indexStore, "locks", `${key}.lock`);
+    try {
+      await mkdir(dirname(lockPath), { recursive: true });
+      await mkdir(lockPath);
+    } catch {
+      return false;
+    }
+    try {
+      if (!(await stillRemovable())) return false;
+      await rm(indexPath, { recursive: true, force: true });
+      return true;
+    } catch {
+      return false;
+    } finally {
+      await rm(lockPath, { recursive: true, force: true });
+    }
+  }
 }
 
-export async function workspaceSummary(cwd: string): Promise<WorkspaceStatus> {
+export async function workspaceSummary(
+  cwd: string,
+  excludedRoots: readonly string[] = [],
+): Promise<WorkspaceStatus> {
   try {
     const identity = await gitIdentity(cwd);
+    if (await excludedProjectReason(identity.sourcePath, excludedRoots))
+      return {
+        state: "excluded",
+        sourcePath: identity.sourcePath,
+        indexPath: null,
+        lastSyncAt: null,
+        identityMatches: true,
+      };
     const linkPath = join(identity.sourcePath, ".codegraph");
     const indexPath = await realpath(linkPath);
     const metadata = await readMetadata(indexPath);
@@ -868,6 +993,7 @@ export function publicSettings(settings: CodeGraphSettings): Omit<
     syncMinIntervalMs: settings.syncMinIntervalMs,
     maxOutputChars: settings.maxOutputChars,
     allowedProjectRoots: settings.allowedProjectRoots,
+    excludedProjectRoots: settings.excludedProjectRoots,
     promptInjection: settings.promptInjection,
     codegraphExecutable: settings.codegraphExecutable || "auto",
     configFile: settings.configFile,
