@@ -72,7 +72,7 @@
     }
   },
   "optionalDependencies": {
-    "@colbymchenry/codegraph": "1.6.0"
+    "@colbymchenry/codegraph": "1.6.2"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.13",
