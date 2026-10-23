@@ -289,9 +289,8 @@ export async function excludedProjectReason(
     const subtree = entry.endsWith(subtreeSuffix);
     let root: string;
     try {
-      root = await realpath(
-        subtree ? entry.slice(0, -subtreeSuffix.length) || sep : entry,
-      );
+      // Keep the separator so "/**" and "C:\**" resolve to the drive root.
+      root = await realpath(subtree ? entry.slice(0, -2) : entry);
     } catch {
       continue;
     }
@@ -527,6 +526,8 @@ async function writeMetadata(
 // checkpoints copy pages back but never shrink the WAL file, so one large
 // indexing transaction leaves a WAL as large as the data it wrote.
 async function truncateWriteAheadLog(database: string): Promise<void> {
+  // Opening a missing path would create an empty database that looks ready.
+  if (!(await exists(database))) return;
   try {
     // Loaded lazily: OMP imports this module under Bun, which lacks node:sqlite.
     const { DatabaseSync } = await import("node:sqlite");
@@ -856,10 +857,15 @@ export class WorkspaceManager {
       const indexPath = join(projectsRoot, entry.name);
       const metadata = await readMetadata(indexPath);
       if (!metadata) {
-        if (await this.#isAbandonedOrphan(indexPath, entry.name)) {
-          await rm(indexPath, { recursive: true, force: true });
+        if (
+          (await this.#isAbandonedOrphan(indexPath)) &&
+          (await this.#removeLocked(
+            indexPath,
+            entry.name,
+            async () => !(await readMetadata(indexPath)),
+          ))
+        )
           removed.push(indexPath);
-        }
         continue;
       }
       if (
@@ -885,26 +891,48 @@ export class WorkspaceManager {
           stale = true;
         }
       }
-      if (stale) {
-        await rm(indexPath, { recursive: true, force: true });
+      if (stale && (await this.#removeLocked(indexPath, entry.name)))
         removed.push(indexPath);
-      }
     }
     return { removed };
   }
 
   // Every successful prepare writes metadata, so an index without it was
-  // abandoned before its first prepare finished. Skip it while a prepare holds
-  // its lock or while it is recent enough to belong to an interrupted run.
-  async #isAbandonedOrphan(indexPath: string, key: string): Promise<boolean> {
-    if (await exists(join(this.settings.indexStore, "locks", `${key}.lock`)))
-      return false;
+  // abandoned before its first prepare finished. Keep recent ones, which may
+  // belong to an interrupted run that will be retried.
+  async #isAbandonedOrphan(indexPath: string): Promise<boolean> {
     try {
       return (
         Date.now() - (await newestModification(indexPath)) >= orphanGraceMs
       );
     } catch {
       return false;
+    }
+  }
+
+  // Deletes while holding the index's prepare lock, so a concurrent prepare
+  // never binds to a directory that is being removed. A held lock skips the
+  // index until the next collection.
+  async #removeLocked(
+    indexPath: string,
+    key: string,
+    stillRemovable: () => Promise<boolean> = async () => true,
+  ): Promise<boolean> {
+    const lockPath = join(this.settings.indexStore, "locks", `${key}.lock`);
+    try {
+      await mkdir(dirname(lockPath), { recursive: true });
+      await mkdir(lockPath);
+    } catch {
+      return false;
+    }
+    try {
+      if (!(await stillRemovable())) return false;
+      await rm(indexPath, { recursive: true, force: true });
+      return true;
+    } catch {
+      return false;
+    } finally {
+      await rm(lockPath, { recursive: true, force: true });
     }
   }
 }
