@@ -22,7 +22,7 @@ export interface WorkspaceIdentity {
 }
 
 export interface WorkspaceStatus {
-  state: "ready" | "uninitialized" | "missing" | string;
+  state: "ready" | "uninitialized" | "missing" | "excluded" | string;
   sourcePath: string;
   indexPath: string | null;
   lastSyncAt: string | number | null;

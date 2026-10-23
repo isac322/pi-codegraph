@@ -52,6 +52,10 @@ Each worktree gets a distinct database. New indexes are stored under the configu
 
 A project path is accepted only when it is inside an allowed root or resolves to a worktree with the same Git common directory as the session root. Repository and worktree identities are checked before an index is reused. Missing or replaced worktrees fail closed.
 
+A directory that is not a Git repository is never indexed when it is the filesystem root, the home directory, or a temporary directory root (`os.tmpdir()`, `$TMPDIR`, `/tmp`, `/var/tmp`). Sessions started there skip CodeGraph initialization and prompt guidance, and tool calls for that path return an error. Git repositories and subdirectories in those locations are indexed normally.
+
+Garbage collection removes managed indexes whose worktree is gone, was replaced, or became an excluded root. It also removes index directories that never received metadata, which happens when the first prepare was interrupted, once no prepare holds their lock and they have been untouched for 24 hours.
+
 ## Configuration
 
 Global configuration is read from `~/.config/pi-codegraph/config.json`, or from `PI_CODEGRAPH_CONFIG`.
@@ -97,6 +101,7 @@ Environment overrides:
 - On the first prepare after a CodeGraph engine upgrade, the facade checks the index extraction version and performs one quiet full rebuild when CodeGraph marks it stale. Existing users do not need to reindex manually, although the first startup after an upgrade may take longer. The rebuild is allowed to finish independently of a client request timeout; detection or rebuild failures do not create a per-tool retry loop, and the next session checks again.
 - `codegraph_files.path` and supported tool `file` arguments accept absolute in-project paths and `~`; the facade normalizes them to repo-relative POSIX paths.
 - Large results are bounded and retain both their beginning and end with an explicit truncation marker.
+- After CodeGraph initializes, rebuilds, or syncs an index, the facade truncates the SQLite write-ahead log so a large indexing transaction does not leave a WAL file as large as the data it wrote. A reader holding the log only postpones this until the next sync.
 
 ## Development
 

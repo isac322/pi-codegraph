@@ -23,6 +23,7 @@ import {
   dirname,
   isAbsolute,
   join,
+  parse,
   relative,
   resolve,
   sep,
@@ -38,6 +39,7 @@ const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
 const metadataName = ".pi-codegraph.json";
 const emptyFilesMarker = "No files found matching the criteria.";
+const orphanGraceMs = 24 * 60 * 60_000;
 const ansiEscapePattern = new RegExp(
   `${String.fromCodePoint(27)}\\[[0-9;]*m`,
   "g",
@@ -277,6 +279,38 @@ function isWithin(child: string, parent: string): boolean {
   );
 }
 
+async function unindexableRoots(): Promise<Set<string>> {
+  const roots = new Set<string>();
+  for (const candidate of [
+    os.homedir(),
+    os.tmpdir(),
+    process.env.TMPDIR,
+    "/tmp",
+    "/var/tmp",
+  ]) {
+    if (!candidate) continue;
+    try {
+      roots.add(await realpath(candidate));
+    } catch {
+      // The directory does not exist on this platform.
+    }
+  }
+  return roots;
+}
+
+export async function unindexableReason(
+  identity: WorkspaceIdentity,
+): Promise<string | undefined> {
+  if (identity.gitCommonDir) return undefined;
+  const { sourcePath } = identity;
+  if (
+    sourcePath !== parse(sourcePath).root &&
+    !(await unindexableRoots()).has(sourcePath)
+  )
+    return undefined;
+  return `CodeGraph does not index ${sourcePath}: it is not a Git repository and is a filesystem, home, or temporary directory root. Open a project directory or pass a projectPath inside one.`;
+}
+
 export class ProjectGuard {
   readonly base: WorkspaceIdentity;
   readonly allowedRoots: string[];
@@ -499,6 +533,33 @@ async function writeMetadata(
   await rename(temporary, target);
 }
 
+// CodeGraph keeps its SQLite database in WAL mode. SQLite's automatic
+// checkpoints copy pages back but never shrink the WAL file, so one large
+// indexing transaction leaves a WAL as large as the data it wrote.
+async function truncateWriteAheadLog(database: string): Promise<void> {
+  try {
+    // Loaded lazily: OMP imports this module under Bun, which lacks node:sqlite.
+    const { DatabaseSync } = await import("node:sqlite");
+    const db = new DatabaseSync(database);
+    try {
+      db.exec("PRAGMA busy_timeout = 1000");
+      db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    } finally {
+      db.close();
+    }
+  } catch {
+    // A reader holding the WAL or a missing SQLite runtime only delays reclamation.
+  }
+}
+
+async function newestModification(path: string): Promise<number> {
+  let newest = (await lstat(path)).mtimeMs;
+  for (const entry of await readdir(path)) {
+    newest = Math.max(newest, (await lstat(join(path, entry))).mtimeMs);
+  }
+  return newest;
+}
+
 async function acquireLock(
   lockPath: string,
   timeoutMs = 30_000,
@@ -550,6 +611,8 @@ export class WorkspaceManager {
     options: CodeGraphRunOptions = {},
   ) {
     await existingDirectory(identity.sourcePath);
+    const excluded = await unindexableReason(identity);
+    if (excluded) throw new Error(excluded);
     const key = createHash("sha256")
       .update(
         `${identity.repoIdentity}\0${identity.worktreeIdentity}\0${identity.sourcePath}`,
@@ -596,6 +659,8 @@ export class WorkspaceManager {
         );
         this.lastSync.set(identity.sourcePath, Date.now());
       }
+      if (!databaseExists || reindexed || shouldSync)
+        await truncateWriteAheadLog(database);
       const metadata = {
         schemaVersion: 2,
         sourcePath: identity.sourcePath,
@@ -651,7 +716,6 @@ export class WorkspaceManager {
     managedIndex: string,
   ): Promise<{ indexPath: string; managed: boolean }> {
     const linkPath = join(identity.sourcePath, ".codegraph");
-    await mkdir(managedIndex, { recursive: true });
     let info: Stats | undefined;
     try {
       info = await lstat(linkPath);
@@ -687,7 +751,7 @@ export class WorkspaceManager {
           target = "";
         }
         if (target) {
-          if (target === (await realpath(managedIndex)))
+          if (target === (await canonicalizePath(managedIndex)))
             return { indexPath: target, managed: true };
           const metadata = await readMetadata(target);
           if (
@@ -724,6 +788,7 @@ export class WorkspaceManager {
       }
     }
     await existingDirectory(identity.sourcePath);
+    await mkdir(managedIndex, { recursive: true });
     const temporary = `${linkPath}.pi-codegraph-${process.pid}`;
     await rm(temporary, { force: true });
     await symlink(managedIndex, temporary, "dir");
@@ -797,8 +862,15 @@ export class WorkspaceManager {
       if (!entry.isDirectory()) continue;
       const indexPath = join(projectsRoot, entry.name);
       const metadata = await readMetadata(indexPath);
+      if (!metadata) {
+        if (await this.#isAbandonedOrphan(indexPath, entry.name)) {
+          await rm(indexPath, { recursive: true, force: true });
+          removed.push(indexPath);
+        }
+        continue;
+      }
       if (
-        !metadata?.managed ||
+        !metadata.managed ||
         typeof metadata.sourcePath !== "string" ||
         activeProjects.has(metadata.sourcePath)
       )
@@ -809,7 +881,8 @@ export class WorkspaceManager {
           const identity = await gitIdentity(metadata.sourcePath);
           stale =
             identity.repoIdentity !== metadata.repoIdentity ||
-            identity.worktreeIdentity !== metadata.worktreeIdentity;
+            identity.worktreeIdentity !== metadata.worktreeIdentity ||
+            Boolean(await unindexableReason(identity));
         } catch {
           stale = true;
         }
@@ -821,11 +894,34 @@ export class WorkspaceManager {
     }
     return { removed };
   }
+
+  // Every successful prepare writes metadata, so an index without it was
+  // abandoned before its first prepare finished. Skip it while a prepare holds
+  // its lock or while it is recent enough to belong to an interrupted run.
+  async #isAbandonedOrphan(indexPath: string, key: string): Promise<boolean> {
+    if (await exists(join(this.settings.indexStore, "locks", `${key}.lock`)))
+      return false;
+    try {
+      return (
+        Date.now() - (await newestModification(indexPath)) >= orphanGraceMs
+      );
+    } catch {
+      return false;
+    }
+  }
 }
 
 export async function workspaceSummary(cwd: string): Promise<WorkspaceStatus> {
   try {
     const identity = await gitIdentity(cwd);
+    if (await unindexableReason(identity))
+      return {
+        state: "excluded",
+        sourcePath: identity.sourcePath,
+        indexPath: null,
+        lastSyncAt: null,
+        identityMatches: true,
+      };
     const linkPath = join(identity.sourcePath, ".codegraph");
     const indexPath = await realpath(linkPath);
     const metadata = await readMetadata(indexPath);
