@@ -16,7 +16,7 @@ export function buildCodeGraphPrompt({
   const state =
     status.identityMatches === false ? "identity-mismatch" : status.state;
   return [
-    "CodeGraph structural tools are available as codegraph_* tools.",
+    "CodeGraph structural tools are available for this workspace.",
     `Active project: ${cwd}`,
     `Index state: ${state}${status.lastSyncAt ? `; last sync: ${status.lastSyncAt}` : ""}`,
     projectRule,

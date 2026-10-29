@@ -26,6 +26,7 @@ import {
   WorkspaceManager,
 } from "../dist/lib/codegraph.js";
 import { defaultSettings, loadSettings } from "../dist/lib/config.js";
+import { buildCodeGraphPrompt } from "../dist/lib/prompt.js";
 import { codegraphTools, toolCallLabel } from "../dist/lib/tool-metadata.js";
 
 function workspaceIdentity(sourcePath, suffix) {
@@ -803,4 +804,29 @@ test("truncates the CodeGraph write-ahead log after syncing", async (t) => {
 
   assert.equal((await stat(`${database}-wal`)).size, 0);
   assert.equal(writer.prepare("SELECT count(*) AS n FROM nodes").get().n, 1);
+});
+
+test("builds runtime-neutral tool guidance without asserting a host tool prefix", () => {
+  const ompPrompt = buildCodeGraphPrompt({
+    runtime: "omp",
+    cwd: "/workspace/project",
+    status: { state: "ready", identityMatches: true, lastSyncAt: 1234 },
+  });
+  const piPrompt = buildCodeGraphPrompt({
+    runtime: "pi",
+    cwd: "/workspace/project",
+    status: { state: "ready", identityMatches: true },
+  });
+
+  assert.match(
+    ompPrompt,
+    /^CodeGraph structural tools are available for this workspace\./,
+  );
+  assert.doesNotMatch(ompPrompt, /as codegraph_\* tools/);
+  assert.match(ompPrompt, /Always pass projectPath="\/workspace\/project"/);
+  assert.doesNotMatch(piPrompt, /as codegraph_\* tools/);
+  assert.match(
+    piPrompt,
+    /automatically binds omitted projectPath to "\/workspace\/project"/,
+  );
 });
