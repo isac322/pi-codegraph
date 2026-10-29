@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/isac322/pi-codegraph/compare/pi-codegraph-v0.5.0...pi-codegraph-v0.5.1) (2026-10-29)
+
+
+### Bug Fixes
+
+* drop host-specific tool prefix assertion and update dependencies to latest ([#26](https://github.com/isac322/pi-codegraph/issues/26)) ([dd89a88](https://github.com/isac322/pi-codegraph/commit/dd89a883ecc8061d29075c834e06b4c2bcc11792))
+
 ## [0.5.0](https://github.com/isac322/pi-codegraph/compare/pi-codegraph-v0.4.0...pi-codegraph-v0.5.0) (2026-10-23)
 
 
