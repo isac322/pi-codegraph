@@ -135,7 +135,7 @@ async function main(): Promise<void> {
   process.chdir(fixturePath);
 
   const { stdout: ompVersion } = await execFileAsync(ompBin, ["--version"]);
-  assert.match(ompVersion, /17\.0\.5/);
+  assert.match(ompVersion, /18\.13\.3/);
 
   const discoveryModule = "@oh-my-pi/pi-coding-agent/discovery";
   const mcpModule = "@oh-my-pi/pi-coding-agent/mcp";

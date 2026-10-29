@@ -72,14 +72,14 @@
     }
   },
   "optionalDependencies": {
-    "@colbymchenry/codegraph": "1.6.0"
+    "@colbymchenry/codegraph": "1.6.2"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.13",
-    "@earendil-works/pi-coding-agent": "^0.85.1",
-    "@earendil-works/pi-tui": "^0.85.1",
-    "@types/node": "^26.5.1",
-    "tsx": "^4.23.13",
+    "@biomejs/biome": "^2.6.4",
+    "@earendil-works/pi-coding-agent": "^1.4.0",
+    "@earendil-works/pi-tui": "^1.4.0",
+    "@types/node": "^26.6.6",
+    "tsx": "^4.23.15",
     "typescript": "^7.0.2"
   },
   "publishConfig": {

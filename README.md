@@ -25,7 +25,7 @@ Restart OMP or run `/reload-plugins` after installation. `omp install` uses the 
 
 OMP loads the package-local `.mcp.json` and `omp.extensions` entry. Pi loads `pi.extensions` and starts the internal MCP facade at session start, never during extension discovery.
 
-The package installs `@colbymchenry/codegraph@1.6.0` as an optional dependency and falls back to a `codegraph` executable on `PATH`.
+The package installs `@colbymchenry/codegraph@1.6.2` as an optional dependency and falls back to a `codegraph` executable on `PATH`.
 
 Node.js 22.19 through Node 24 is required. OMP itself may run under Bun, but it starts this package's compiled MCP facade with the `node` command declared in `.mcp.json`; MCP child processes do not inherit or need to match the host agent's runtime.
 
