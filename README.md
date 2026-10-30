@@ -54,7 +54,7 @@ A project path is accepted only when it is inside an allowed root or resolves to
 
 Projects listed in `excludedProjectRoots` are never indexed. Sessions started in an excluded project skip CodeGraph initialization and prompt guidance, and tool calls for it return an error. Nothing is excluded by default.
 
-Garbage collection runs when the facade starts and then hourly. It removes managed indexes whose worktree is gone, was replaced, or is now excluded. It also removes index directories that never received metadata (left by an interrupted first prepare or by older releases) once no prepare holds their lock and they have been untouched for 24 hours.
+Garbage collection runs when the facade starts and then hourly. It removes managed indexes whose worktree is gone, was replaced, or is now excluded. It also removes index directories that never received metadata once no prepare holds their lock and they have been untouched for 24 hours. Collection waits while the shared daemon or a project writer may still hold a database open. Live, malformed, or changing ownership records retain the index; removal reserves CodeGraph's rebuild lock before deleting a verified stale index.
 
 ## Configuration
 
@@ -102,7 +102,7 @@ An `excludedProjectRoots` entry matches a project whose root is exactly that dir
 - OMP uses the package-local MCP server and its native `tool_call` hook. For CodeGraph MCP tools, an omitted `projectPath` is rewritten to the trusted session `ctx.cwd`; an explicit path, sibling worktree, and unrelated OMP tool are left unchanged.
 - Workers are capped, evicted by least-recently-used idle order, and terminated after the idle timeout.
 - Tool cancellation and timeout propagate to the worker. Diagnostics are ANSI-stripped, size-limited, and redact common token and secret forms.
-- On the first prepare after a CodeGraph engine upgrade, the facade checks the index extraction version and performs one quiet full rebuild when CodeGraph marks it stale. Existing users do not need to reindex manually, although the first startup after an upgrade may take longer. The rebuild is allowed to finish independently of a client request timeout; detection or rebuild failures do not create a per-tool retry loop, and the next session checks again.
+- On the first prepare after a CodeGraph engine upgrade, the facade checks the index extraction version and performs one quiet full rebuild when CodeGraph marks it stale. The rebuild runs independently of a client request timeout. A successful check is cached for the facade's lifetime; a status or rebuild failure preserves the existing index and allows a later prepare to check again.
 - `codegraph_files.path` and supported tool `file` arguments accept absolute in-project paths and `~`; the facade normalizes them to repo-relative POSIX paths.
 - Large results are bounded and retain both their beginning and end with an explicit truncation marker.
 - After CodeGraph initializes, rebuilds, or syncs an index, the facade truncates the SQLite write-ahead log so a large indexing transaction does not leave a WAL file as large as the data it wrote. A reader holding the log only postpones this until the next sync.
@@ -115,7 +115,7 @@ npm run typecheck
 npm run build
 ```
 
-`npm pack` and local `npm publish` run the build through `prepack`. The release workflow installs locked dependencies, typechecks, builds `dist`, and publishes that distribution through npm OIDC.
+`npm pack` and local `npm publish` run the build through `prepack`. Pull requests and releases run the shared Release QA workflow, including both supported Node versions, OMP, Pi, shared-daemon integration, and an installed-package smoke test. The release workflow checks the exact revision before Release Please creates a tag, then typechecks and builds the tagged distribution before publishing through npm OIDC.
 
 ## Security
 
