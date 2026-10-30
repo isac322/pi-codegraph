@@ -28,6 +28,7 @@ import {
   sep,
 } from "node:path";
 import { promisify } from "node:util";
+import { codeGraphOwnership } from "./codegraph-ownership.js";
 import type {
   CodeGraphSettings,
   WorkspaceIdentity,
@@ -677,7 +678,6 @@ export class WorkspaceManager {
     options: CodeGraphRunOptions,
   ): Promise<boolean> {
     if (this.reindexChecked.has(indexPath)) return false;
-    this.reindexChecked.add(indexPath);
     let reindexRecommended: boolean;
     try {
       const status = await runCodeGraph(
@@ -688,9 +688,13 @@ export class WorkspaceManager {
       );
       reindexRecommended = statusRecommendsReindex(status.stdout);
     } catch {
+      this.reindexChecked.delete(indexPath);
       return false;
     }
-    if (!reindexRecommended) return false;
+    if (!reindexRecommended) {
+      this.reindexChecked.add(indexPath);
+      return false;
+    }
     await existingDirectory(identity.sourcePath);
     try {
       await runCodeGraph(
@@ -699,8 +703,10 @@ export class WorkspaceManager {
         ["index", "--quiet"],
         { ...options, signal: undefined, timeoutMs: null },
       );
+      this.reindexChecked.add(indexPath);
       return true;
     } catch {
+      this.reindexChecked.delete(indexPath);
       return false;
     }
   }
@@ -837,6 +843,8 @@ export class WorkspaceManager {
   }
 
   async gc(
+    // This process-local snapshot only avoids collecting an active request;
+    // upstream ownership records remain the authoritative DB safety check.
     activeProjects: ReadonlySet<string> = new Set<string>(),
     force = false,
   ): Promise<{ removed: string[] }> {
@@ -857,15 +865,25 @@ export class WorkspaceManager {
       const indexPath = join(projectsRoot, entry.name);
       const metadata = await readMetadata(indexPath);
       if (!metadata) {
-        if (
-          (await this.#isAbandonedOrphan(indexPath)) &&
-          (await this.#removeLocked(
+        if (await this.#isAbandonedOrphan(indexPath)) {
+          const ownership = await codeGraphOwnership.inspect(
             indexPath,
-            entry.name,
-            async () => !(await readMetadata(indexPath)),
-          ))
-        )
-          removed.push(indexPath);
+            indexPath,
+          );
+          const token = ownership.token;
+          if (ownership.state === "free" && token) {
+            if (
+              await this.#removeLocked(
+                indexPath,
+                entry.name,
+                async () =>
+                  !(await readMetadata(indexPath)) &&
+                  (await codeGraphOwnership.same(indexPath, indexPath, token)),
+              )
+            )
+              removed.push(indexPath);
+          }
+        }
         continue;
       }
       if (
@@ -891,7 +909,52 @@ export class WorkspaceManager {
           stale = true;
         }
       }
-      if (stale && (await this.#removeLocked(indexPath, entry.name)))
+      if (!stale) continue;
+      const ownership = await codeGraphOwnership.inspect(
+        indexPath,
+        metadata.sourcePath,
+      );
+      if (ownership.state !== "free" || !ownership.token) continue;
+      const token = ownership.token;
+      if (
+        await this.#removeLocked(indexPath, entry.name, async () => {
+          const current = await readMetadata(indexPath);
+          if (!current) return false;
+          if (
+            !current.managed ||
+            typeof current.sourcePath !== "string" ||
+            current.sourcePath !== metadata.sourcePath ||
+            current.repoIdentity !== metadata.repoIdentity ||
+            current.worktreeIdentity !== metadata.worktreeIdentity
+          )
+            return false;
+          let stillStale = !(await exists(current.sourcePath));
+          if (!stillStale) {
+            try {
+              const identity = await gitIdentity(current.sourcePath);
+              stillStale =
+                identity.repoIdentity !== current.repoIdentity ||
+                identity.worktreeIdentity !== current.worktreeIdentity ||
+                Boolean(
+                  await excludedProjectReason(
+                    identity.sourcePath,
+                    this.settings.excludedProjectRoots,
+                  ),
+                );
+            } catch {
+              stillStale = true;
+            }
+          }
+          return (
+            stillStale &&
+            (await codeGraphOwnership.same(
+              indexPath,
+              current.sourcePath,
+              token,
+            ))
+          );
+        })
+      )
         removed.push(indexPath);
     }
     return { removed };

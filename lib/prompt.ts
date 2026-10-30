@@ -11,7 +11,7 @@ export function buildCodeGraphPrompt({
 }): string {
   const projectRule =
     runtime === "omp"
-      ? `Always pass projectPath="${cwd}" so parent and child agents query the correct worktree.`
+      ? `OMP binds omitted projectPath to the trusted session cwd "${cwd}"; pass it explicitly when querying a different trusted sibling worktree.`
       : `The extension automatically binds omitted projectPath to "${cwd}".`;
   const state =
     status.identityMatches === false ? "identity-mismatch" : status.state;

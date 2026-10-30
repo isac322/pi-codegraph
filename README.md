@@ -99,7 +99,7 @@ An `excludedProjectRoots` entry matches a project whose root is exactly that dir
 ## Runtime behavior
 
 - Pi defers process startup until `session_start` and closes all resources on `session_shutdown`.
-- OMP uses one package-local MCP facade and project-scoped CodeGraph workers.
+- OMP uses the package-local MCP server and its native `tool_call` hook. For CodeGraph MCP tools, an omitted `projectPath` is rewritten to the trusted session `ctx.cwd`; an explicit path, sibling worktree, and unrelated OMP tool are left unchanged.
 - Workers are capped, evicted by least-recently-used idle order, and terminated after the idle timeout.
 - Tool cancellation and timeout propagate to the worker. Diagnostics are ANSI-stripped, size-limited, and redact common token and secret forms.
 - On the first prepare after a CodeGraph engine upgrade, the facade checks the index extraction version and performs one quiet full rebuild when CodeGraph marks it stale. Existing users do not need to reindex manually, although the first startup after an upgrade may take longer. The rebuild is allowed to finish independently of a client request timeout; detection or rebuild failures do not create a per-tool retry loop, and the next session checks again.

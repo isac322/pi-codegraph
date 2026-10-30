@@ -4,10 +4,9 @@ on:
   push:
     branches:
       - main
-  workflow_dispatch:
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-main
   cancel-in-progress: false
 
 permissions:
@@ -17,45 +16,126 @@ permissions:
   id-token: write
 
 jobs:
+  release-qa:
+    name: Release QA
+    uses: ./.github/workflows/release-qa.yml
+    with:
+      ref: ${{ github.sha }}
+      omp-version: 18.14.0
+
   release:
+    name: Release Please and publish
+    if: ${{ needs.release-qa.result == 'success' }}
+    needs: [release-qa]
     runs-on: ubuntu-latest
     steps:
+      - name: Check out exact gated revision
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+      - name: Verify main has not advanced since Release QA
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          set -eu
+          actual_sha="$(git ls-remote origin refs/heads/main | cut -f1)"
+          test "$actual_sha" = "$EXPECTED_SHA"
       - id: release
+        name: Run Release Please
         uses: googleapis/release-please-action@v5
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
-
-      - name: Check out released revision
-        if: ${{ steps.release.outputs.release_created }}
+      - name: Verify Release Please tagged the gated SHA
+        if: ${{ steps.release.outputs.release_created == 'true' }}
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          RELEASE_SHA: ${{ steps.release.outputs.sha }}
+        run: |
+          set -eu
+          test -n "$RELEASE_SHA"
+          test "$RELEASE_SHA" = "$EXPECTED_SHA"
+      - name: Check out generated release tag
+        if: ${{ steps.release.outputs.release_created == 'true' }}
         uses: actions/checkout@v7
         with:
           ref: ${{ steps.release.outputs.tag_name }}
-
+          fetch-depth: 1
+      - name: Verify generated tag revision
+        if: ${{ steps.release.outputs.release_created == 'true' }}
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          set -eu
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
       - name: Set up Node.js
-        if: ${{ steps.release.outputs.release_created }}
+        if: ${{ steps.release.outputs.release_created == 'true' }}
         uses: actions/setup-node@v7
         with:
-          node-version: "24"
+          node-version: 24
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
-
       - name: Install OIDC-capable npm
-        if: ${{ steps.release.outputs.release_created }}
+        if: ${{ steps.release.outputs.release_created == 'true' }}
         run: npm install --global "npm@^11.5.1"
-
       - name: Install dependencies
-        if: ${{ steps.release.outputs.release_created }}
+        if: ${{ steps.release.outputs.release_created == 'true' }}
         run: npm ci --ignore-scripts
-
-      - name: Typecheck
-        if: ${{ steps.release.outputs.release_created }}
-        run: npm run typecheck
-
-      - name: Build distribution
-        if: ${{ steps.release.outputs.release_created }}
-        run: npm run build
-
       - name: Publish to npm
-        if: ${{ steps.release.outputs.release_created }}
+        if: ${{ steps.release.outputs.release_created == 'true' }}
         run: npm publish --access public --ignore-scripts
+      - name: Clean-install published artifact smoke
+        if: ${{ steps.release.outputs.release_created == 'true' }}
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -eu
+          smoke_dir="$(mktemp -d)"
+          trap 'rm -rf "$smoke_dir"' EXIT
+          npm install --prefix "$smoke_dir/install" --ignore-scripts \
+            "@isac322/pi-codegraph@${RELEASE_VERSION}"
+          package_root="$smoke_dir/install/node_modules/@isac322/pi-codegraph"
+          test -x "$package_root/dist/bin/codegraph-mcp.js"
+          test -f "$package_root/dist/extensions/pi.js"
+          test -f "$package_root/dist/extensions/omp.js"
+
+          fixture="$smoke_dir/fixture"
+          mkdir -p "$fixture/src"
+          git -C "$fixture" init -q
+          git -C "$fixture" config user.name "Release smoke"
+          git -C "$fixture" config user.email "release-smoke@example.invalid"
+          printf '%s\n' 'export function releaseSmoke() { return "published-artifact"; }' > "$fixture/src/smoke.ts"
+          git -C "$fixture" add src/smoke.ts
+          git -C "$fixture" commit -qm fixture
+
+          input="$smoke_dir/mcp.input"
+          output="$smoke_dir/mcp.output"
+          error="$smoke_dir/mcp.error"
+          mkfifo "$input"
+          : > "$output"
+          PI_CODEGRAPH_BASE_ROOT="$fixture" \
+          PI_CODEGRAPH_ALLOWED_ROOTS="$fixture" \
+          PI_CODEGRAPH_INDEX_STORE="$smoke_dir/index-store" \
+          PI_CODEGRAPH_AUTO_GC=false \
+          node "$package_root/dist/bin/codegraph-mcp.js" < "$input" > "$output" 2> "$error" &
+          mcp_pid=$!
+          exec 3> "$input"
+          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"release-smoke","version":"1"}}}' >&3
+          printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"codegraph_node\",\"arguments\":{\"projectPath\":\"$fixture\",\"file\":\"src/smoke.ts\"}}}" >&3
+          attempt=0
+          while [ "$attempt" -lt 120 ]; do
+            attempt=$((attempt + 1))
+            if grep -Fq '"id":2' "$output"; then
+              break
+            fi
+            if ! kill -0 "$mcp_pid" 2>/dev/null; then
+              cat "$error" >&2
+              exit 1
+            fi
+            sleep 0.25
+          done
+          grep -Fq '"id":2' "$output"
+          grep -Fq 'releaseSmoke' "$output"
+          exec 3>&-
+          wait "$mcp_pid"

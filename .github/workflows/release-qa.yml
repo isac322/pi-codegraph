@@ -1,0 +1,282 @@
+name: Release QA
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Exact commit SHA to test
+        required: true
+        type: string
+      omp-version:
+        description: Pinned OMP version used by integration lanes
+        required: false
+        default: 18.14.0
+        type: string
+      include-quality:
+        description: Run the Node quality matrix in this reusable workflow
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  validate-ref:
+    name: Validate candidate SHA
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require a full commit SHA
+        env:
+          EXPECTED_SHA: ${{ inputs.ref }}
+        run: |
+          set -eu
+          if ! printf '%s\n' "$EXPECTED_SHA" | grep -Eq '^[0-9a-fA-F]{40}$'; then
+            echo "ref must be a full 40-character commit SHA" >&2
+            exit 1
+          fi
+
+  quality:
+    if: ${{ inputs.include-quality }}
+    needs: [validate-ref]
+    name: Node ${{ matrix.node-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [22.19.0, 24]
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 1
+      - name: Verify candidate SHA
+        env:
+          EXPECTED_SHA: ${{ inputs.ref }}
+        run: |
+          set -eu
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+      - name: Check formatting and lint
+        run: npm run check
+      - name: Type-check
+        run: npm run typecheck
+      - name: Build and run unit tests
+        run: npm test
+      - name: Audit production dependencies
+        run: npm audit --omit=dev
+
+  omp:
+    needs: [validate-ref]
+    name: OMP Docker integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 1
+      - name: Verify candidate SHA
+        env:
+          EXPECTED_SHA: ${{ inputs.ref }}
+        run: |
+          set -eu
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Build isolated OMP test image
+        run: >-
+          docker build --file tests/docker/Dockerfile.omp
+          --build-arg OMP_VERSION=${{ inputs.omp-version }}
+          --tag pi-codegraph-omp-integration:${{ inputs.ref }} .
+      - name: Exercise every CodeGraph tool through OMP
+        run: docker run --rm pi-codegraph-omp-integration:${{ inputs.ref }}
+
+  shared-daemon:
+    needs: [validate-ref]
+    name: OMP shared daemon and worktrees
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 1
+      - name: Verify candidate SHA
+        env:
+          EXPECTED_SHA: ${{ inputs.ref }}
+        run: |
+          set -eu
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Build OMP integration image
+        run: >-
+          docker build --file tests/docker/Dockerfile.omp
+          --build-arg OMP_VERSION=${{ inputs.omp-version }}
+          --tag pi-codegraph-omp-integration:${{ inputs.ref }} .
+      - name: Exercise shared daemon and worktrees
+        run: >-
+          docker run --rm --init
+          pi-codegraph-omp-integration:${{ inputs.ref }}
+          bun tests/shared-daemon-docker.integration.ts
+
+  pi:
+    needs: [validate-ref]
+    name: Pi extension
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 1
+      - name: Verify candidate SHA
+        env:
+          EXPECTED_SHA: ${{ inputs.ref }}
+        run: |
+          set -eu
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Build Pi integration image
+        run: >-
+          docker build --file tests/docker/Dockerfile.pi
+          --tag pi-codegraph-pi-integration:${{ inputs.ref }} .
+      - name: Exercise every CodeGraph tool through Pi
+        run: docker run --rm --init pi-codegraph-pi-integration:${{ inputs.ref }}
+
+  artifact:
+    needs: [validate-ref]
+    name: Artifact smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 1
+      - name: Verify candidate SHA
+        env:
+          EXPECTED_SHA: ${{ inputs.ref }}
+        run: |
+          set -eu
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies and build artifact
+        run: npm ci --ignore-scripts && npm run build
+      - name: Install packed artifact in a clean directory
+        run: |
+          set -eu
+          smoke_dir="$(mktemp -d)"
+          trap 'rm -rf "$smoke_dir"' EXIT
+          npm pack --ignore-scripts --pack-destination "$smoke_dir"
+          tarball="$(find "$smoke_dir" -maxdepth 1 -name '*.tgz' -print -quit)"
+          test -n "$tarball"
+          npm install --prefix "$smoke_dir/install" --ignore-scripts "$tarball"
+          package_root="$smoke_dir/install/node_modules/@isac322/pi-codegraph"
+          test -x "$package_root/dist/bin/codegraph-mcp.js"
+          test -f "$package_root/dist/extensions/pi.js"
+          test -f "$package_root/dist/extensions/omp.js"
+
+          fixture="$smoke_dir/fixture"
+          mkdir -p "$fixture/src"
+          git -C "$fixture" init -q
+          git -C "$fixture" config user.name "Release QA"
+          git -C "$fixture" config user.email "release-qa@example.invalid"
+          printf '%s\n' 'export function artifactSmoke() { return "artifact-smoke"; }' > "$fixture/src/smoke.ts"
+          git -C "$fixture" add src/smoke.ts
+          git -C "$fixture" commit -qm fixture
+
+          input="$smoke_dir/mcp.input"
+          output="$smoke_dir/mcp.output"
+          error="$smoke_dir/mcp.error"
+          mkfifo "$input"
+          : > "$output"
+          PI_CODEGRAPH_BASE_ROOT="$fixture" \
+          PI_CODEGRAPH_ALLOWED_ROOTS="$fixture" \
+          PI_CODEGRAPH_INDEX_STORE="$smoke_dir/index-store" \
+          PI_CODEGRAPH_AUTO_GC=false \
+          node "$package_root/dist/bin/codegraph-mcp.js" < "$input" > "$output" 2> "$error" &
+          mcp_pid=$!
+          exec 3> "$input"
+          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"release-qa","version":"1"}}}' >&3
+          printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"codegraph_node\",\"arguments\":{\"projectPath\":\"$fixture\",\"file\":\"src/smoke.ts\"}}}" >&3
+          attempt=0
+          while [ "$attempt" -lt 120 ]; do
+            attempt=$((attempt + 1))
+            if grep -Fq '"id":2' "$output"; then
+              break
+            fi
+            if ! kill -0 "$mcp_pid" 2>/dev/null; then
+              cat "$error" >&2
+              exit 1
+            fi
+            sleep 0.25
+          done
+          grep -Fq '"id":2' "$output"
+          grep -Fq 'artifactSmoke' "$output"
+          exec 3>&-
+          wait "$mcp_pid"
+
+  release-qa-with-quality:
+    name: Release QA
+    if: ${{ always() && inputs.include-quality }}
+    needs: [validate-ref, quality, omp, shared-daemon, pi, artifact]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every release lane to pass
+        env:
+          REF_RESULT: ${{ needs.validate-ref.result }}
+          QUALITY_RESULT: ${{ needs.quality.result }}
+          OMP_RESULT: ${{ needs.omp.result }}
+          SHARED_DAEMON_RESULT: ${{ needs.shared-daemon.result }}
+          PI_RESULT: ${{ needs.pi.result }}
+          ARTIFACT_RESULT: ${{ needs.artifact.result }}
+        run: |
+          set -eu
+          for lane in REF QUALITY OMP SHARED_DAEMON PI ARTIFACT; do
+            variable="${lane}_RESULT"
+            result="${!variable}"
+            if [ "$result" != success ]; then
+              echo "$lane lane was $result; Release QA is invalid" >&2
+              exit 1
+            fi
+          done
+          echo "Release QA passed for ${{ inputs.ref }}"
+          echo "Node versions: 22.19.0, 24"
+          echo "OMP version: ${{ inputs.omp-version }}"
+
+  release-qa-without-quality:
+    name: Release QA
+    if: ${{ always() && !inputs.include-quality }}
+    needs: [validate-ref, omp, shared-daemon, pi, artifact]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every integration lane to pass
+        env:
+          REF_RESULT: ${{ needs.validate-ref.result }}
+          OMP_RESULT: ${{ needs.omp.result }}
+          SHARED_DAEMON_RESULT: ${{ needs.shared-daemon.result }}
+          PI_RESULT: ${{ needs.pi.result }}
+          ARTIFACT_RESULT: ${{ needs.artifact.result }}
+        run: |
+          set -eu
+          for lane in REF OMP SHARED_DAEMON PI ARTIFACT; do
+            variable="${lane}_RESULT"
+            result="${!variable}"
+            if [ "$result" != success ]; then
+              echo "$lane lane was $result; Release QA is invalid" >&2
+              exit 1
+            fi
+          done
+          echo "Release QA passed for ${{ inputs.ref }}"
+          echo "OMP version: ${{ inputs.omp-version }}"

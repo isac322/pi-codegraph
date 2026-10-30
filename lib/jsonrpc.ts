@@ -101,6 +101,7 @@ export class JsonRpcPeer {
     while (newline !== -1) {
       const line = this.buffer.slice(0, newline).trim();
       this.buffer = this.buffer.slice(newline + 1);
+      newline = this.buffer.indexOf("\n");
       if (!line) continue;
       let message: JsonRpcMessage;
       try {
@@ -126,7 +127,6 @@ export class JsonRpcPeer {
       } else {
         pending.finish(undefined, message.result);
       }
-      newline = this.buffer.indexOf("\n");
     }
   }
 }
