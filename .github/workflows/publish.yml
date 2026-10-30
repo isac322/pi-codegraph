@@ -82,6 +82,12 @@ jobs:
       - name: Install dependencies
         if: ${{ steps.release.outputs.release_created == 'true' }}
         run: npm ci --ignore-scripts
+      - name: Type-check release artifact
+        if: ${{ steps.release.outputs.release_created == 'true' }}
+        run: npm run typecheck
+      - name: Build release artifact
+        if: ${{ steps.release.outputs.release_created == 'true' }}
+        run: npm run build
       - name: Publish to npm
         if: ${{ steps.release.outputs.release_created == 'true' }}
         run: npm publish --access public --ignore-scripts

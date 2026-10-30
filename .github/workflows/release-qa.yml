@@ -227,14 +227,15 @@ jobs:
           exec 3>&-
           wait "$mcp_pid"
 
-  release-qa-with-quality:
+  release-qa:
     name: Release QA
-    if: ${{ always() && inputs.include-quality }}
+    if: ${{ always() }}
     needs: [validate-ref, quality, omp, shared-daemon, pi, artifact]
     runs-on: ubuntu-latest
     steps:
       - name: Require every release lane to pass
         env:
+          INCLUDE_QUALITY: ${{ inputs.include-quality }}
           REF_RESULT: ${{ needs.validate-ref.result }}
           QUALITY_RESULT: ${{ needs.quality.result }}
           OMP_RESULT: ${{ needs.omp.result }}
@@ -243,40 +244,25 @@ jobs:
           ARTIFACT_RESULT: ${{ needs.artifact.result }}
         run: |
           set -eu
-          for lane in REF QUALITY OMP SHARED_DAEMON PI ARTIFACT; do
-            variable="${lane}_RESULT"
-            result="${!variable}"
-            if [ "$result" != success ]; then
-              echo "$lane lane was $result; Release QA is invalid" >&2
-              exit 1
-            fi
-          done
-          echo "Release QA passed for ${{ inputs.ref }}"
-          echo "Node versions: 22.19.0, 24"
-          echo "OMP version: ${{ inputs.omp-version }}"
-
-  release-qa-without-quality:
-    name: Release QA
-    if: ${{ always() && !inputs.include-quality }}
-    needs: [validate-ref, omp, shared-daemon, pi, artifact]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Require every integration lane to pass
-        env:
-          REF_RESULT: ${{ needs.validate-ref.result }}
-          OMP_RESULT: ${{ needs.omp.result }}
-          SHARED_DAEMON_RESULT: ${{ needs.shared-daemon.result }}
-          PI_RESULT: ${{ needs.pi.result }}
-          ARTIFACT_RESULT: ${{ needs.artifact.result }}
-        run: |
-          set -eu
           for lane in REF OMP SHARED_DAEMON PI ARTIFACT; do
-            variable="${lane}_RESULT"
-            result="${!variable}"
+            case "$lane" in
+              REF) result="$REF_RESULT" ;;
+              OMP) result="$OMP_RESULT" ;;
+              SHARED_DAEMON) result="$SHARED_DAEMON_RESULT" ;;
+              PI) result="$PI_RESULT" ;;
+              ARTIFACT) result="$ARTIFACT_RESULT" ;;
+            esac
             if [ "$result" != success ]; then
               echo "$lane lane was $result; Release QA is invalid" >&2
               exit 1
             fi
           done
+          if [ "$INCLUDE_QUALITY" = true ] && [ "$QUALITY_RESULT" != success ]; then
+            echo "QUALITY lane was $QUALITY_RESULT; Release QA is invalid" >&2
+            exit 1
+          fi
           echo "Release QA passed for ${{ inputs.ref }}"
+          if [ "$INCLUDE_QUALITY" = true ]; then
+            echo "Node versions: 22.19.0, 24"
+          fi
           echo "OMP version: ${{ inputs.omp-version }}"

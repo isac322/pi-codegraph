@@ -385,7 +385,7 @@ test("keeps a long reindex lock alive with heartbeats", async (t) => {
   const identity = workspaceIdentity(sourcePath, "heartbeat");
   await mkdir(sourcePath);
   await createManagedDatabase(indexStore, identity);
-  const fake = await createFakeCodeGraph(root, { indexDelayMs: 3_500 });
+  const fake = await createFakeCodeGraph(root, { indexDelayMs: 5_000 });
   const settings = {
     ...defaultSettings,
     autoSync: false,
@@ -397,7 +397,7 @@ test("keeps a long reindex lock alive with heartbeats", async (t) => {
 
   const firstPrepare = new WorkspaceManager(settings).prepare(identity);
   await waitForCodeGraphCall(fake.logPath, "index");
-  await delay(2_200);
+  await delay(1_000);
   await assert.rejects(
     new WorkspaceManager(settings).prepare(identity),
     /Timed out waiting for CodeGraph index lock/,

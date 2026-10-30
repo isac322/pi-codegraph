@@ -1,3 +1,11 @@
+import { randomUUID } from "node:crypto";
+import {
+  linkSync,
+  lstatSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 
@@ -8,12 +16,22 @@ export interface CodeGraphOwnershipSnapshot {
   token?: string;
 }
 
+export interface CodeGraphOwnershipReservation {
+  same(): Promise<boolean>;
+  release(): void;
+}
+
 export interface CodeGraphOwnershipInspector {
   inspect(
     indexPath: string,
     sourcePath: string,
   ): Promise<CodeGraphOwnershipSnapshot>;
   same(indexPath: string, sourcePath: string, token: string): Promise<boolean>;
+  reserve(
+    indexPath: string,
+    sourcePath: string,
+    token: string,
+  ): Promise<CodeGraphOwnershipReservation | undefined>;
 }
 
 type ArtifactKind =
@@ -192,6 +210,7 @@ async function resolveArtifactRoots(
 async function readSnapshot(
   indexPath: string,
   sourcePath: string,
+  reservation?: ArtifactRecord,
 ): Promise<ArtifactSnapshot | undefined> {
   const roots = await resolveArtifactRoots(indexPath, sourcePath);
   if (!roots) return undefined;
@@ -202,6 +221,20 @@ async function readSnapshot(
   const records = (
     await Promise.all(paths.map(({ path, kind }) => readArtifact(path, kind)))
   ).sort((left, right) => left.path.localeCompare(right.path));
+  if (reservation) {
+    const own = records.findIndex((record) => record.path === reservation.path);
+    const ownRecord = own >= 0 ? records[own] : undefined;
+    if (!ownRecord || tokenFor([ownRecord]) !== tokenFor([reservation]))
+      return undefined;
+    // Compare every other artifact against the pre-reservation token. Only
+    // this exact inode and payload are ours; a replacement is never ignored.
+    records[own] = {
+      kind: "rebuild.pid",
+      path: reservation.path,
+      exists: false,
+      readable: true,
+    };
+  }
   const token = tokenFor(records);
   let state: CodeGraphOwnershipState = "free";
 
@@ -231,10 +264,11 @@ async function readSnapshot(
 async function stableSnapshot(
   indexPath: string,
   sourcePath: string,
+  reservation?: ArtifactRecord,
 ): Promise<ArtifactSnapshot | undefined> {
-  const first = await readSnapshot(indexPath, sourcePath);
+  const first = await readSnapshot(indexPath, sourcePath, reservation);
   if (!first) return undefined;
-  const second = await readSnapshot(indexPath, sourcePath);
+  const second = await readSnapshot(indexPath, sourcePath, reservation);
   if (!second || first.token !== second.token)
     return {
       ...(second ?? first),
@@ -242,6 +276,71 @@ async function stableSnapshot(
       token: second?.token ?? first.token,
     };
   return second;
+}
+
+// CodeGraph 1.6.2 mcp/writer-lock.js publishes a complete JSON record by
+// linking it into rebuild.pid exclusively. assertNoRebuild then prevents new
+// project opens while this live process owns the rebuild intent. Unlike
+// upstream stale-lock recovery, GC never clears someone else's lock.
+function claimRebuildIntent(indexPath: string): ArtifactRecord | undefined {
+  const path = join(indexPath, "rebuild.pid");
+  const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  const raw = `${JSON.stringify({
+    pid: process.pid,
+    mode: "pi-codegraph-gc",
+    startedAt: Date.now(),
+    ready: false,
+  })}\n`;
+  let created = false;
+  try {
+    writeFileSync(temporary, raw, { flag: "wx", mode: 0o600 });
+    created = true;
+    const info = lstatSync(temporary);
+    const record: ArtifactRecord = {
+      kind: "rebuild.pid",
+      path,
+      exists: true,
+      raw,
+      stat: {
+        dev: info.dev,
+        ino: info.ino,
+        mode: info.mode,
+        size: info.size,
+        mtimeMs: info.mtimeMs,
+      },
+      readable: true,
+    };
+    linkSync(temporary, path);
+    return record;
+  } catch {
+    // Existing, unreadable, or unsupported admission state means retain.
+    return undefined;
+  } finally {
+    if (created) {
+      try {
+        unlinkSync(temporary);
+      } catch {
+        // The reservation remains valid even if temporary-name cleanup fails.
+      }
+    }
+  }
+}
+
+function releaseRebuildIntent(reservation: ArtifactRecord): void {
+  try {
+    const expected = reservation.stat;
+    const current = lstatSync(reservation.path);
+    if (
+      expected &&
+      current.isFile() &&
+      current.dev === expected.dev &&
+      current.ino === expected.ino &&
+      readFileSync(reservation.path, "utf8") === reservation.raw
+    )
+      unlinkSync(reservation.path);
+  } catch {
+    // Removal already deleted our inode, or ownership changed: leave it alone.
+  }
 }
 
 export const codeGraphOwnership: CodeGraphOwnershipInspector = {
@@ -258,6 +357,28 @@ export const codeGraphOwnership: CodeGraphOwnershipInspector = {
     return Boolean(
       snapshot && snapshot.state === "free" && snapshot.token === token,
     );
+  },
+
+  async reserve(indexPath, sourcePath, token) {
+    const reservation = claimRebuildIntent(indexPath);
+    if (!reservation) return undefined;
+    const same = async () => {
+      const snapshot = await stableSnapshot(indexPath, sourcePath, reservation);
+      return Boolean(
+        snapshot && snapshot.state === "free" && snapshot.token === token,
+      );
+    };
+    try {
+      if (await same())
+        return {
+          same,
+          release: () => releaseRebuildIntent(reservation),
+        };
+    } catch {
+      // Inspection failures must not strand our admission lock.
+    }
+    releaseRebuildIntent(reservation);
+    return undefined;
   },
 };
 

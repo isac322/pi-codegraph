@@ -28,7 +28,10 @@ import {
   sep,
 } from "node:path";
 import { promisify } from "node:util";
-import { codeGraphOwnership } from "./codegraph-ownership.js";
+import {
+  type CodeGraphOwnershipReservation,
+  codeGraphOwnership,
+} from "./codegraph-ownership.js";
 import type {
   CodeGraphSettings,
   WorkspaceIdentity,
@@ -876,9 +879,9 @@ export class WorkspaceManager {
               await this.#removeLocked(
                 indexPath,
                 entry.name,
-                async () =>
-                  !(await readMetadata(indexPath)) &&
-                  (await codeGraphOwnership.same(indexPath, indexPath, token)),
+                indexPath,
+                token,
+                async () => !(await readMetadata(indexPath)),
               )
             )
               removed.push(indexPath);
@@ -917,43 +920,42 @@ export class WorkspaceManager {
       if (ownership.state !== "free" || !ownership.token) continue;
       const token = ownership.token;
       if (
-        await this.#removeLocked(indexPath, entry.name, async () => {
-          const current = await readMetadata(indexPath);
-          if (!current) return false;
-          if (
-            !current.managed ||
-            typeof current.sourcePath !== "string" ||
-            current.sourcePath !== metadata.sourcePath ||
-            current.repoIdentity !== metadata.repoIdentity ||
-            current.worktreeIdentity !== metadata.worktreeIdentity
-          )
-            return false;
-          let stillStale = !(await exists(current.sourcePath));
-          if (!stillStale) {
-            try {
-              const identity = await gitIdentity(current.sourcePath);
-              stillStale =
-                identity.repoIdentity !== current.repoIdentity ||
-                identity.worktreeIdentity !== current.worktreeIdentity ||
-                Boolean(
-                  await excludedProjectReason(
-                    identity.sourcePath,
-                    this.settings.excludedProjectRoots,
-                  ),
-                );
-            } catch {
-              stillStale = true;
+        await this.#removeLocked(
+          indexPath,
+          entry.name,
+          metadata.sourcePath,
+          token,
+          async () => {
+            const current = await readMetadata(indexPath);
+            if (!current) return false;
+            if (
+              !current.managed ||
+              typeof current.sourcePath !== "string" ||
+              current.sourcePath !== metadata.sourcePath ||
+              current.repoIdentity !== metadata.repoIdentity ||
+              current.worktreeIdentity !== metadata.worktreeIdentity
+            )
+              return false;
+            let stillStale = !(await exists(current.sourcePath));
+            if (!stillStale) {
+              try {
+                const identity = await gitIdentity(current.sourcePath);
+                stillStale =
+                  identity.repoIdentity !== current.repoIdentity ||
+                  identity.worktreeIdentity !== current.worktreeIdentity ||
+                  Boolean(
+                    await excludedProjectReason(
+                      identity.sourcePath,
+                      this.settings.excludedProjectRoots,
+                    ),
+                  );
+              } catch {
+                stillStale = true;
+              }
             }
-          }
-          return (
-            stillStale &&
-            (await codeGraphOwnership.same(
-              indexPath,
-              current.sourcePath,
-              token,
-            ))
-          );
-        })
+            return stillStale;
+          },
+        )
       )
         removed.push(indexPath);
     }
@@ -973,13 +975,14 @@ export class WorkspaceManager {
     }
   }
 
-  // Deletes while holding the index's prepare lock, so a concurrent prepare
-  // never binds to a directory that is being removed. A held lock skips the
-  // index until the next collection.
+  // Serialize with wrapper prepares, then claim upstream rebuild intent to
+  // stop other CodeGraph processes from opening the DB during removal.
   async #removeLocked(
     indexPath: string,
     key: string,
-    stillRemovable: () => Promise<boolean> = async () => true,
+    sourcePath: string,
+    token: string,
+    stillRemovable: () => Promise<boolean>,
   ): Promise<boolean> {
     const lockPath = join(this.settings.indexStore, "locks", `${key}.lock`);
     try {
@@ -988,13 +991,21 @@ export class WorkspaceManager {
     } catch {
       return false;
     }
+    let reservation: CodeGraphOwnershipReservation | undefined;
     try {
       if (!(await stillRemovable())) return false;
+      reservation = await codeGraphOwnership.reserve(
+        indexPath,
+        sourcePath,
+        token,
+      );
+      if (!reservation || !(await reservation.same())) return false;
       await rm(indexPath, { recursive: true, force: true });
       return true;
     } catch {
       return false;
     } finally {
+      reservation?.release();
       await rm(lockPath, { recursive: true, force: true });
     }
   }
