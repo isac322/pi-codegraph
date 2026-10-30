@@ -99,6 +99,15 @@ jobs:
           set -eu
           smoke_dir="$(mktemp -d)"
           trap 'rm -rf "$smoke_dir"' EXIT
+          attempt=0
+          until npm view "@isac322/pi-codegraph@${RELEASE_VERSION}" version --json >/dev/null 2>&1; do
+            attempt=$((attempt + 1))
+            if [ "$attempt" -ge 120 ]; then
+              echo "Published package ${RELEASE_VERSION} was not visible after 10 minutes" >&2
+              exit 1
+            fi
+            sleep 5
+          done
           npm install --prefix "$smoke_dir/install" --ignore-scripts \
             "@isac322/pi-codegraph@${RELEASE_VERSION}"
           package_root="$smoke_dir/install/node_modules/@isac322/pi-codegraph"
