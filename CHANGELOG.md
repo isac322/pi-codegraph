@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.2](https://github.com/isac322/pi-codegraph/compare/pi-codegraph-v0.5.1...pi-codegraph-v0.5.2) (2026-10-30)
+
+
+### Bug Fixes
+
+* harden CodeGraph lifecycle and integrations ([41299ea](https://github.com/isac322/pi-codegraph/commit/41299eae7b625bb302cebd7b1b9555274437d16c))
+
 ## [0.5.1](https://github.com/isac322/pi-codegraph/compare/pi-codegraph-v0.5.0...pi-codegraph-v0.5.1) (2026-10-29)
 
 
