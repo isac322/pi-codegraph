@@ -1,7 +1,7 @@
 FROM node:22.19.0-bookworm-slim
 
 ARG BUN_VERSION=1.4.4
-ARG OMP_VERSION=18.13.3
+ARG OMP_VERSION=18.14.0
 
 RUN apt-get update \
   && apt-get install --yes --no-install-recommends git \

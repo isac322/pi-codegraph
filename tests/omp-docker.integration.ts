@@ -12,6 +12,8 @@ interface ToolExecutionResult {
 
 interface LoadedMcpTool {
   tool: {
+    name: string;
+    mcpServerName?: string;
     mcpToolName?: string;
     execute(
       toolCallId: string,
@@ -61,13 +63,32 @@ const expectedTools = [
   "codegraph_explore",
   "codegraph_status",
 ] as const;
+type BeforeAgentStartEvent = {
+  systemPrompt?: string[];
+  reason: "prompt" | "revive";
+};
+
+type BeforeAgentStartHandler = (
+  event: BeforeAgentStartEvent,
+  context: { cwd: string },
+) => Promise<{ systemPrompt: string[] } | undefined>;
+type ToolCallHandler = (
+  event: { toolName: string; input: Record<string, unknown> },
+  context: { cwd: string },
+) => Promise<{ input: Record<string, unknown> } | undefined>;
+type OmpHandlers = {
+  beforeAgentStart?: BeforeAgentStartHandler;
+  toolCall?: ToolCallHandler;
+};
 
 const execFileAsync = promisify(execFile);
 const fixturePath = "/tmp/pi-codegraph-omp-fixture";
+const siblingFixturePath = "/tmp/pi-codegraph-omp-sibling";
 const ompBin = process.env.OMP_BIN || "omp";
 
 async function createFixture(): Promise<void> {
   await rm(fixturePath, { recursive: true, force: true });
+  await rm(siblingFixturePath, { recursive: true, force: true });
   await mkdir(path.join(fixturePath, "src"), { recursive: true });
   await writeFile(
     path.join(fixturePath, "src", "math.ts"),
@@ -121,6 +142,27 @@ async function createFixture(): Promise<void> {
   ]);
   await execFileAsync("git", ["-C", fixturePath, "add", "."]);
   await execFileAsync("git", ["-C", fixturePath, "commit", "-m", "fixture"]);
+  await execFileAsync("git", [
+    "-C",
+    fixturePath,
+    "worktree",
+    "add",
+    "-b",
+    "sibling",
+    siblingFixturePath,
+  ]);
+  await writeFile(
+    path.join(siblingFixturePath, "src", "sibling.ts"),
+    "export function SiblingWorktreeSymbol() { return 'sibling'; }\n",
+  );
+  await execFileAsync("git", ["-C", siblingFixturePath, "add", "."]);
+  await execFileAsync("git", [
+    "-C",
+    siblingFixturePath,
+    "commit",
+    "-m",
+    "sibling fixture",
+  ]);
 }
 
 function textOf(result: ToolExecutionResult): string {
@@ -130,12 +172,106 @@ function textOf(result: ToolExecutionResult): string {
     .join("\n");
 }
 
+async function registerOmpHandlers(): Promise<OmpHandlers> {
+  const { default: register } = (await import("../dist/extensions/omp.js")) as {
+    default: (omp: {
+      on: (event: string, handler: (...args: never[]) => unknown) => void;
+    }) => Promise<void>;
+  };
+  const handlers: OmpHandlers = {};
+  await register({
+    on(event, handler) {
+      if (event === "before_agent_start") {
+        handlers.beforeAgentStart = handler as BeforeAgentStartHandler;
+      } else if (event === "tool_call") {
+        handlers.toolCall = handler as ToolCallHandler;
+      }
+    },
+  });
+  return handlers;
+}
+
+async function testOmpPromptInjection(): Promise<void> {
+  const handlers = await registerOmpHandlers();
+  const callback = handlers.beforeAgentStart;
+  assert.ok(callback, "OMP extension did not register before_agent_start");
+  assert.ok(handlers.toolCall, "OMP extension did not register tool_call");
+  const input = ["first\nsection,with punctuation", "second section"];
+  const originalInput = [...input];
+  const result = await callback(
+    { systemPrompt: input, reason: "prompt" },
+    { cwd: fixturePath },
+  );
+  assert.ok(result);
+  assert.notEqual(result.systemPrompt, input);
+  assert.deepEqual(result.systemPrompt.slice(0, input.length), input);
+  assert.match(result.systemPrompt.at(-1) || "", /CodeGraph structural tools/);
+  assert.deepEqual(input, originalInput);
+
+  const emptyResult = await callback(
+    { systemPrompt: [], reason: "prompt" },
+    { cwd: fixturePath },
+  );
+  assert.ok(emptyResult);
+  assert.equal(emptyResult.systemPrompt.length, 1);
+  assert.match(emptyResult.systemPrompt[0], /CodeGraph structural tools/);
+
+  let cwdReads = 0;
+  const reviveResult = await callback(
+    { systemPrompt: [], reason: "revive" },
+    {
+      get cwd() {
+        cwdReads += 1;
+        return fixturePath;
+      },
+    },
+  );
+  assert.equal(reviveResult, undefined);
+  assert.equal(cwdReads, 0);
+
+  const previousExcludedRoots = process.env.PI_CODEGRAPH_EXCLUDED_ROOTS;
+  process.env.PI_CODEGRAPH_EXCLUDED_ROOTS = fixturePath;
+  try {
+    const excludedCallback = (await registerOmpHandlers()).beforeAgentStart;
+    assert.ok(excludedCallback);
+    const excludedResult = await excludedCallback(
+      { systemPrompt: input, reason: "prompt" },
+      { cwd: fixturePath },
+    );
+    assert.equal(excludedResult, undefined);
+    await assert.rejects(access(path.join(fixturePath, ".codegraph")));
+  } finally {
+    if (previousExcludedRoots === undefined)
+      delete process.env.PI_CODEGRAPH_EXCLUDED_ROOTS;
+    else process.env.PI_CODEGRAPH_EXCLUDED_ROOTS = previousExcludedRoots;
+  }
+}
+
+async function testDisabledPromptInjection(): Promise<void> {
+  const previous = process.env.PI_CODEGRAPH_PROMPT_INJECTION;
+  process.env.PI_CODEGRAPH_PROMPT_INJECTION = "0";
+  try {
+    const handlers = await registerOmpHandlers();
+    assert.equal(handlers.beforeAgentStart, undefined);
+    assert.ok(
+      handlers.toolCall,
+      "routing must remain active when prompts are disabled",
+    );
+  } finally {
+    if (previous === undefined)
+      delete process.env.PI_CODEGRAPH_PROMPT_INJECTION;
+    else process.env.PI_CODEGRAPH_PROMPT_INJECTION = previous;
+  }
+}
+
 async function main(): Promise<void> {
   await createFixture();
   process.chdir(fixturePath);
+  await testOmpPromptInjection();
+  await testDisabledPromptInjection();
 
   const { stdout: ompVersion } = await execFileAsync(ompBin, ["--version"]);
-  assert.match(ompVersion, /18\.13\.3/);
+  assert.match(ompVersion, /18\.14\.0/);
 
   const discoveryModule = "@oh-my-pi/pi-coding-agent/discovery";
   const mcpModule = "@oh-my-pi/pi-coding-agent/mcp";
@@ -175,6 +311,10 @@ async function main(): Promise<void> {
       { projectPath: fixturePath },
     );
     assert.equal(prepared.state, "ready");
+    const siblingPrepared = await connection.transport.request<{
+      state: string;
+    }>("codegraph/workspace/prepare", { projectPath: siblingFixturePath });
+    assert.equal(siblingPrepared.state, "ready");
 
     const listed = await connection.transport.request<{
       tools: McpToolDefinition[];
@@ -215,6 +355,62 @@ async function main(): Promise<void> {
       loaded.tools.map((entry) => [entry.tool.mcpToolName, entry.tool]),
     );
     assert.deepEqual([...tools.keys()].sort(), [...expectedTools].sort());
+    const searchTool = tools.get("codegraph_search");
+    assert.ok(searchTool);
+    assert.equal(searchTool.name, "mcp__codegraph_search");
+    assert.equal(searchTool.mcpServerName, "codegraph");
+    assert.equal(searchTool.mcpToolName, "codegraph_search");
+    const routingHandlers = await registerOmpHandlers();
+    assert.ok(routingHandlers.toolCall);
+    const siblingRoute = await routingHandlers.toolCall(
+      { toolName: searchTool.name, input: { query: "SiblingWorktreeSymbol" } },
+      { cwd: siblingFixturePath },
+    );
+    assert.deepEqual(siblingRoute?.input, {
+      query: "SiblingWorktreeSymbol",
+      projectPath: siblingFixturePath,
+    });
+    const siblingResult = await searchTool.execute(
+      "integration-sibling-routing",
+      siblingRoute?.input,
+      undefined,
+      { cwd: siblingFixturePath },
+    );
+    assert.equal(siblingResult.isError, undefined, textOf(siblingResult));
+    assert.match(textOf(siblingResult), /SiblingWorktreeSymbol/);
+
+    const explicitRoute = await routingHandlers.toolCall(
+      {
+        toolName: searchTool.name,
+        input: {
+          query: "SiblingWorktreeSymbol",
+          projectPath: siblingFixturePath,
+        },
+      },
+      { cwd: fixturePath },
+    );
+    assert.equal(explicitRoute, undefined);
+    const explicitSiblingResult = await searchTool.execute(
+      "integration-explicit-sibling-routing",
+      { query: "SiblingWorktreeSymbol", projectPath: siblingFixturePath },
+      undefined,
+      { cwd: fixturePath },
+    );
+    assert.equal(explicitSiblingResult.isError, undefined);
+    assert.match(textOf(explicitSiblingResult), /SiblingWorktreeSymbol/);
+    const unrelatedRoute = await routingHandlers.toolCall(
+      {
+        toolName: "mcp__other_codegraph_search",
+        input: { query: "addNumbers" },
+      },
+      { cwd: siblingFixturePath },
+    );
+    assert.equal(unrelatedRoute, undefined);
+    const nonMcpRoute = await routingHandlers.toolCall(
+      { toolName: "bash", input: { command: "printf safe" } },
+      { cwd: siblingFixturePath },
+    );
+    assert.equal(nonMcpRoute, undefined);
 
     const cases: Array<{
       name: (typeof expectedTools)[number];
@@ -291,9 +487,17 @@ async function main(): Promise<void> {
     for (const testCase of cases) {
       const tool = tools.get(testCase.name);
       assert.ok(tool, `OMP did not expose ${testCase.name}`);
+      const routed = await routingHandlers.toolCall(
+        { toolName: tool.name, input: testCase.args },
+        { cwd: fixturePath },
+      );
+      assert.deepEqual(routed?.input, {
+        ...testCase.args,
+        projectPath: fixturePath,
+      });
       const result = await tool.execute(
         `integration-${testCase.name}`,
-        { ...testCase.args, projectPath: fixturePath },
+        routed?.input,
         undefined,
         { cwd: fixturePath },
       );

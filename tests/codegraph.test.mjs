@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmod,
@@ -25,9 +26,13 @@ import {
   normalizeFilesPath,
   WorkspaceManager,
 } from "../dist/lib/codegraph.js";
+import {
+  codeGraphOwnership,
+  inspectCodeGraphOwnership,
+} from "../dist/lib/codegraph-ownership.js";
 import { defaultSettings, loadSettings } from "../dist/lib/config.js";
-import { buildCodeGraphPrompt } from "../dist/lib/prompt.js";
 import { codegraphTools, toolCallLabel } from "../dist/lib/tool-metadata.js";
+import { CodeGraphWorkerPool } from "../dist/lib/worker-pool.js";
 
 function workspaceIdentity(sourcePath, suffix) {
   return {
@@ -57,7 +62,12 @@ async function createManagedDatabase(indexStore, identity) {
 
 async function createFakeCodeGraph(
   root,
-  { initialState = "stale", indexDelayMs = 0, failCommand = "" } = {},
+  {
+    initialState = "stale",
+    indexDelayMs = 0,
+    failCommand = "",
+    failOnceCommand = "",
+  } = {},
 ) {
   const executable = path.join(root, "fake-codegraph.mjs");
   const logPath = path.join(root, "codegraph-calls.jsonl");
@@ -67,26 +77,30 @@ async function createFakeCodeGraph(
     executable,
     [
       "#!/usr/bin/env node",
-      'import { appendFileSync, readFileSync, writeFileSync } from "node:fs";',
+      'import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";',
       `const logPath = ${JSON.stringify(logPath)};`,
       `const statePath = ${JSON.stringify(statePath)};`,
+      `const failOncePath = ${JSON.stringify(`${root}/fail-once`)};`,
       `const indexDelayMs = ${indexDelayMs};`,
       `const failCommand = ${JSON.stringify(failCommand)};`,
+      `const failOnceCommand = ${JSON.stringify(failOnceCommand)};`,
       "const args = process.argv.slice(2);",
       'appendFileSync(logPath, JSON.stringify(args) + "\\n");',
+      'const failOnce = (failOnceCommand === args[0] || (failOnceCommand === "invalid-status" && args[0] === "status")) && !existsSync(failOncePath);',
+      "if (failOnce) writeFileSync(failOncePath, args[0]);",
       'if (args[0] === "status") {',
-      '  if (failCommand === "invalid-status") {',
+      '  if (failCommand === "invalid-status" || failOnceCommand === "invalid-status" && failOnce) {',
       '    process.stdout.write("not-json");',
       "    process.exit(0);",
       "  }",
-      '  if (failCommand === "status") process.exit(1);',
+      '  if (failCommand === "status" || failOnceCommand === "status" && failOnce) process.exit(1);',
       '  const stale = readFileSync(statePath, "utf8") === "stale";',
       "  process.stdout.write(JSON.stringify({ index: { reindexRecommended: stale } }));",
       "  process.exit(0);",
       "}",
       'if (args[0] === "index") {',
       "  if (indexDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, indexDelayMs));",
-      '  if (failCommand === "index") process.exit(1);',
+      '  if (failCommand === "index" || failOnceCommand === "index" && failOnce) process.exit(1);',
       '  writeFileSync(statePath, "current");',
       "  process.exit(0);",
       "}",
@@ -98,6 +112,47 @@ async function createFakeCodeGraph(
   );
   await chmod(executable, 0o755);
   return { executable, logPath, statePath };
+}
+
+async function createFakeMcpCodeGraph(root) {
+  const executable = path.join(root, "fake-mcp-codegraph.mjs");
+  await writeFile(
+    executable,
+    [
+      "#!/usr/bin/env node",
+      'import { mkdirSync, writeFileSync } from "node:fs";',
+      'import { join } from "node:path";',
+      'import readline from "node:readline";',
+      "const args = process.argv.slice(2);",
+      'if (args[0] === "init") {',
+      '  mkdirSync(join(process.cwd(), ".codegraph"), { recursive: true });',
+      '  writeFileSync(join(process.cwd(), ".codegraph", "codegraph.db"), "");',
+      "  process.exit(0);",
+      "}",
+      'if (args[0] !== "serve") process.exit(1);',
+      "const input = readline.createInterface({ input: process.stdin });",
+      '      const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");',
+      'input.on("line", (line) => {',
+      "  let message;",
+      "  try { message = JSON.parse(line); } catch { return; }",
+      '  if (message.method === "initialize") {',
+      '    send({ jsonrpc: "2.0", id: message.id, result: {} });',
+      "    return;",
+      "  }",
+      '  if (message.method !== "tools/call" || message.id === undefined) return;',
+      "  const args = message.params?.arguments ?? {};",
+      '  if (message.params?.name === "fail") {',
+      '    send({ jsonrpc: "2.0", id: message.id, error: { code: -32603, message: "controlled failure" } });',
+      "    return;",
+      "  }",
+      "  const delayMs = Number(args.delayMs ?? 0);",
+      '      setTimeout(() => send({ jsonrpc: "2.0", id: message.id, result: { content: [] } }), delayMs);',
+      "});",
+      "",
+    ].join("\n"),
+  );
+  await chmod(executable, 0o755);
+  return { executable };
 }
 
 async function readCodeGraphCalls(logPath) {
@@ -267,8 +322,53 @@ test("keeps serving when stale detection or rebuilding fails", async (t) => {
     assert.deepEqual(
       await readCodeGraphCalls(fake.logPath),
       failCommand === "status" || failCommand === "invalid-status"
-        ? [["status", "--json"]]
+        ? [
+            ["status", "--json"],
+            ["status", "--json"],
+          ]
         : [
+            ["status", "--json"],
+            ["index", "--quiet"],
+            ["status", "--json"],
+            ["index", "--quiet"],
+          ],
+    );
+  }
+});
+
+test("re-arms stale checks after transient status and rebuild failures", async (t) => {
+  for (const failOnceCommand of ["status", "invalid-status", "index"]) {
+    const root = await mkdtemp(path.join(os.tmpdir(), "pi-codegraph-test-"));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const sourcePath = path.join(root, "project");
+    const indexStore = path.join(root, "managed");
+    const identity = workspaceIdentity(sourcePath, `retry-${failOnceCommand}`);
+    await mkdir(sourcePath);
+    await createManagedDatabase(indexStore, identity);
+    const fake = await createFakeCodeGraph(root, { failOnceCommand });
+    const manager = new WorkspaceManager({
+      ...defaultSettings,
+      autoSync: false,
+      autoGc: false,
+      indexStore,
+      codegraphExecutable: fake.executable,
+    });
+
+    assert.equal((await manager.prepare(identity)).state, "ready");
+    assert.equal((await manager.prepare(identity)).state, "ready");
+    assert.equal(await readFile(fake.statePath, "utf8"), "current");
+    const calls = await readCodeGraphCalls(fake.logPath);
+    assert.deepEqual(
+      calls,
+      failOnceCommand === "index"
+        ? [
+            ["status", "--json"],
+            ["index", "--quiet"],
+            ["status", "--json"],
+            ["index", "--quiet"],
+          ]
+        : [
+            ["status", "--json"],
             ["status", "--json"],
             ["index", "--quiet"],
           ],
@@ -285,7 +385,7 @@ test("keeps a long reindex lock alive with heartbeats", async (t) => {
   const identity = workspaceIdentity(sourcePath, "heartbeat");
   await mkdir(sourcePath);
   await createManagedDatabase(indexStore, identity);
-  const fake = await createFakeCodeGraph(root, { indexDelayMs: 3_500 });
+  const fake = await createFakeCodeGraph(root, { indexDelayMs: 5_000 });
   const settings = {
     ...defaultSettings,
     autoSync: false,
@@ -297,7 +397,7 @@ test("keeps a long reindex lock alive with heartbeats", async (t) => {
 
   const firstPrepare = new WorkspaceManager(settings).prepare(identity);
   await waitForCodeGraphCall(fake.logPath, "index");
-  await delay(2_200);
+  await delay(1_000);
   await assert.rejects(
     new WorkspaceManager(settings).prepare(identity),
     /Timed out waiting for CodeGraph index lock/,
@@ -307,6 +407,35 @@ test("keeps a long reindex lock alive with heartbeats", async (t) => {
     ["status", "--json"],
     ["index", "--quiet"],
   ]);
+});
+
+test("protects overlapping and failed worker calls with counted leases", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pi-codegraph-test-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const fake = await createFakeMcpCodeGraph(root);
+  const pool = new CodeGraphWorkerPool({
+    ...defaultSettings,
+    autoGc: false,
+    indexStore: path.join(root, "managed"),
+    codegraphExecutable: fake.executable,
+    requestTimeoutMs: 1_000,
+  });
+  t.after(() => pool.close());
+
+  const first = pool.call("/project", "codegraph_node", { delayMs: 100 });
+  const second = pool.call("/project", "codegraph_node", { delayMs: 100 });
+  assert.deepEqual(pool.activeProjects(), new Set(["/project"]));
+  assert.deepEqual(await Promise.all([first, second]), [
+    { content: [] },
+    { content: [] },
+  ]);
+  assert.deepEqual(pool.activeProjects(), new Set());
+
+  await assert.rejects(pool.call("/project", "fail", {}), /controlled failure/);
+  assert.deepEqual(pool.activeProjects(), new Set());
+  await pool.close();
+  assert.deepEqual(pool.activeProjects(), new Set());
+  await assert.rejects(pool.call("/project", "codegraph_node", {}), /closed/);
 });
 
 test("reuses a legacy CodeGraph symlink for the same source directory", async (t) => {
@@ -621,6 +750,100 @@ test("lazily repairs a managed link after garbage collection", async (t) => {
   assert.equal(await realpath(linkPath), await realpath(expectedIndex));
 });
 
+test("fails closed when CodeGraph ownership is malformed or changes", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pi-codegraph-test-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const sourcePath = path.join(root, "project");
+  const indexStore = path.join(root, "managed");
+  const identity = workspaceIdentity(sourcePath, "ownership");
+  await mkdir(sourcePath);
+  const indexPath = await createManagedDatabase(indexStore, identity);
+  await writeFile(
+    path.join(indexPath, ".pi-codegraph.json"),
+    `${JSON.stringify({
+      schemaVersion: 2,
+      sourcePath,
+      repoIdentity: "stale-repo",
+      worktreeIdentity: "stale-worktree",
+      managed: true,
+    })}\n`,
+  );
+  const free = await inspectCodeGraphOwnership(indexPath, sourcePath);
+  assert.equal(free.state, "free");
+  assert.ok(free.token);
+  await writeFile(path.join(indexPath, "writer.pid"), "{malformed");
+  assert.equal(
+    await codeGraphOwnership.same(indexPath, sourcePath, free.token),
+    false,
+  );
+  const manager = new WorkspaceManager({
+    ...defaultSettings,
+    autoGc: false,
+    indexStore,
+  });
+
+  assert.deepEqual((await manager.gc(new Set(), true)).removed, []);
+  assert.ok((await stat(indexPath)).isDirectory());
+  await rm(path.join(indexPath, "writer.pid"));
+  assert.deepEqual((await manager.gc(new Set(), true)).removed, [indexPath]);
+});
+
+test("retains a managed index while the central daemon owner is live", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pi-codegraph-test-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const sourcePath = path.join(root, "project");
+  const indexStore = path.join(root, "managed");
+  const identity = workspaceIdentity(sourcePath, "central-daemon-ownership");
+  await mkdir(sourcePath);
+  const indexPath = await createManagedDatabase(indexStore, identity);
+  await writeFile(
+    path.join(indexPath, ".pi-codegraph.json"),
+    `${JSON.stringify({
+      schemaVersion: 2,
+      sourcePath,
+      repoIdentity: "stale-repo",
+      worktreeIdentity: "stale-worktree",
+      managed: true,
+    })}\n`,
+  );
+  await symlink(indexPath, path.join(sourcePath, ".codegraph"), "dir");
+
+  const daemon = spawn(
+    process.execPath,
+    ["-e", "setInterval(() => {}, 1000)"],
+    {
+      stdio: "ignore",
+    },
+  );
+  t.after(() => daemon.kill());
+  await new Promise((resolve, reject) => {
+    daemon.once("spawn", resolve);
+    daemon.once("error", reject);
+  });
+  const daemonCodeGraphDir = path.join(indexStore, "daemon", ".codegraph");
+  await mkdir(daemonCodeGraphDir, { recursive: true });
+  await writeFile(
+    path.join(daemonCodeGraphDir, "daemon.pid"),
+    `${JSON.stringify({
+      pid: daemon.pid,
+      version: "1.6.2",
+      socketPath: path.join(root, "daemon.sock"),
+      startedAt: Date.now(),
+    })}\n`,
+  );
+
+  assert.deepEqual(await inspectCodeGraphOwnership(indexPath, sourcePath), {
+    state: "live",
+  });
+  const manager = new WorkspaceManager({
+    ...defaultSettings,
+    autoGc: false,
+    indexStore,
+  });
+  assert.deepEqual((await manager.gc(new Set(), true)).removed, []);
+  assert.ok((await stat(indexPath)).isDirectory());
+});
+
 test("refuses only projects matched by excludedProjectRoots", async (t) => {
   const root = await realpath(
     await mkdtemp(path.join(os.tmpdir(), "pi-codegraph-test-")),
@@ -804,29 +1027,4 @@ test("truncates the CodeGraph write-ahead log after syncing", async (t) => {
 
   assert.equal((await stat(`${database}-wal`)).size, 0);
   assert.equal(writer.prepare("SELECT count(*) AS n FROM nodes").get().n, 1);
-});
-
-test("builds runtime-neutral tool guidance without asserting a host tool prefix", () => {
-  const ompPrompt = buildCodeGraphPrompt({
-    runtime: "omp",
-    cwd: "/workspace/project",
-    status: { state: "ready", identityMatches: true, lastSyncAt: 1234 },
-  });
-  const piPrompt = buildCodeGraphPrompt({
-    runtime: "pi",
-    cwd: "/workspace/project",
-    status: { state: "ready", identityMatches: true },
-  });
-
-  assert.match(
-    ompPrompt,
-    /^CodeGraph structural tools are available for this workspace\./,
-  );
-  assert.doesNotMatch(ompPrompt, /as codegraph_\* tools/);
-  assert.match(ompPrompt, /Always pass projectPath="\/workspace\/project"/);
-  assert.doesNotMatch(piPrompt, /as codegraph_\* tools/);
-  assert.match(
-    piPrompt,
-    /automatically binds omitted projectPath to "\/workspace\/project"/,
-  );
 });

@@ -103,7 +103,7 @@ async function ensureDaemonRoot(settings: CodeGraphSettings): Promise<string> {
 
 export class CodeGraphWorkerPool {
   readonly settings: CodeGraphSettings;
-  readonly projects = new Set<string>();
+  private readonly activeCalls = new Map<string, number>();
   private entry?: WorkerEntry;
   private creating?: Promise<WorkerEntry>;
   private closed = false;
@@ -113,7 +113,11 @@ export class CodeGraphWorkerPool {
   }
 
   activeProjects(): Set<string> {
-    return new Set(this.projects);
+    return new Set(
+      [...this.activeCalls]
+        .filter(([, count]) => count > 0)
+        .map(([path]) => path),
+    );
   }
 
   async call(
@@ -126,24 +130,29 @@ export class CodeGraphWorkerPool {
       throw new Error("CodeGraph worker pool is closed");
     }
 
-    this.projects.add(projectPath);
-    const entry = await this.getOrCreateEntry();
-    const result = await entry.peer.request(
-      "tools/call",
-      {
-        name: toolName,
-        arguments: { ...args, projectPath },
-      },
-      {
-        signal,
-        timeoutMs: this.settings.requestTimeoutMs,
-      },
+    this.activeCalls.set(
+      projectPath,
+      (this.activeCalls.get(projectPath) ?? 0) + 1,
     );
-    return result as ToolResult;
-  }
-
-  async closeProject(projectPath: string, _error?: Error): Promise<void> {
-    this.projects.delete(projectPath);
+    try {
+      const entry = await this.getOrCreateEntry();
+      const result = await entry.peer.request(
+        "tools/call",
+        {
+          name: toolName,
+          arguments: { ...args, projectPath },
+        },
+        {
+          signal,
+          timeoutMs: this.settings.requestTimeoutMs,
+        },
+      );
+      return result as ToolResult;
+    } finally {
+      const count = this.activeCalls.get(projectPath) ?? 0;
+      if (count <= 1) this.activeCalls.delete(projectPath);
+      else this.activeCalls.set(projectPath, count - 1);
+    }
   }
 
   async close(): Promise<void> {
@@ -151,7 +160,6 @@ export class CodeGraphWorkerPool {
       return;
     }
     this.closed = true;
-    this.projects.clear();
 
     const pending = this.creating;
     if (pending) {

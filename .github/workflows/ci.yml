@@ -1,12 +1,15 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   quality:
@@ -17,8 +20,17 @@ jobs:
       matrix:
         node-version: [22.19.0, 24]
     steps:
-      - name: Check out repository
+      - name: Check out exact workflow revision
         uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+      - name: Verify workflow revision
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          set -eu
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
       - name: Set up Node.js
         uses: actions/setup-node@v7
         with:
@@ -35,14 +47,10 @@ jobs:
       - name: Audit production dependencies
         run: npm audit --omit=dev
 
-  omp-integration:
-    name: OMP Docker integration
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v7
-      - name: Build isolated OMP test image
-        run: docker build --file tests/docker/Dockerfile.omp --tag pi-codegraph-omp-integration .
-      - name: Exercise every CodeGraph tool through OMP
-        run: docker run --rm pi-codegraph-omp-integration
+  release-qa:
+    name: Release QA
+    uses: ./.github/workflows/release-qa.yml
+    with:
+      ref: ${{ github.sha }}
+      omp-version: 18.14.0
+      include-quality: false

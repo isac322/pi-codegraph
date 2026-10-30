@@ -27,6 +27,26 @@ async function runGit(cwd: string, ...args: string[]): Promise<void> {
 async function clientMain(projectPath: string, symbol: string): Promise<void> {
   try {
     process.chdir(projectPath);
+    const { default: register } = (await import(
+      "../dist/extensions/omp.js"
+    )) as {
+      default: (omp: {
+        on: (event: string, handler: (...args: never[]) => unknown) => void;
+      }) => Promise<void>;
+    };
+    let toolCall:
+      | ((
+          event: { toolName: string; input: Record<string, unknown> },
+          context: { cwd: string },
+        ) => Promise<{ input: Record<string, unknown> } | undefined>)
+      | undefined;
+    await register({
+      on(event, handler) {
+        if (event === "tool_call") {
+          toolCall = handler as typeof toolCall;
+        }
+      },
+    });
     await import("@oh-my-pi/pi-coding-agent/discovery");
     const { discoverAndLoadMCPTools } = await import(
       "@oh-my-pi/pi-coding-agent/mcp"
@@ -39,13 +59,21 @@ async function clientMain(projectPath: string, symbol: string): Promise<void> {
     assert.deepEqual(loaded.errors, []);
     assert.ok(loaded.connectedServers.includes("codegraph"));
 
-    const search = loaded.tools.find(({ tool }) =>
-      tool.name.endsWith("codegraph_search"),
+    const search = loaded.tools.find(
+      ({ tool }) =>
+        tool.mcpServerName === "codegraph" &&
+        tool.mcpToolName === "codegraph_search",
     );
-    assert.ok(search, "OMP did not expose codegraph_search");
+    assert.ok(search, "OMP did not expose CodeGraph codegraph_search");
+    assert.equal(search.tool.name, "mcp__codegraph_search");
+    const routed = await toolCall?.(
+      { toolName: search.tool.name, input: { query: symbol } },
+      { cwd: projectPath },
+    );
+    assert.deepEqual(routed?.input, { query: symbol, projectPath });
     const result = await search.tool.execute(
       `search-${symbol}`,
-      { query: symbol },
+      routed?.input,
       undefined,
       { cwd: projectPath } as never,
     );
